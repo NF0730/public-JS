@@ -168,9 +168,12 @@ javascript:(function(){
 /* rev1.76:
  - add hidden-reason breakdown (info/log), duplicate-cluster detail badge, and score debug labels
  */
+/* rev1.77:
+ - detect embed URLs in anchor text when href points to a different asset URL
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.76';
+const SCRIPT_REV = '1.77';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -1218,6 +1221,12 @@ function collectImageUrls(img) {
   return urls;
 }
 
+function findFirstHttpUrlInText(text) {
+  if (!text) return '';
+  const m = /https?:\/\/[^\s"'<>]+/i.exec(String(text));
+  return m ? m[0] : '';
+}
+
 function extractFromDocument(doc, source, baseUrl) {
   const items = [];
   const strictBody = !!state.cfg.strictBodyOnly;
@@ -1283,7 +1292,21 @@ function extractFromDocument(doc, source, baseUrl) {
     const origHidden = isOriginallyHidden(a);
     const linkImg = a.querySelector ? a.querySelector('img') : null;
     const linkSize = linkImg ? getImgSize(linkImg) : { w: 0, h: 0 };
-    const embed = getEmbedInfo(abs.abs);
+    const embedFromHref = getEmbedInfo(abs.abs);
+    let embedFromText = null;
+    if (!embedFromHref) {
+      const textUrl = findFirstHttpUrlInText(a.textContent || '');
+      if (textUrl) {
+        const textAbs = normalizeUrl(textUrl, baseUrl || location.href);
+        if (textAbs) {
+          embedFromText = getEmbedInfo(textAbs.abs);
+          if (embedFromText && !embedFromText.openUrl) {
+            embedFromText = Object.assign({}, embedFromText, { openUrl: textAbs.abs });
+          }
+        }
+      }
+    }
+    const embed = embedFromHref || embedFromText;
     if (embed) {
       items.push(makeItem('embed', abs.abs, {
         width: 0,
@@ -1296,7 +1319,8 @@ function extractFromDocument(doc, source, baseUrl) {
         embedUrl: embed.url,
         el: a
       }, baseUrl));
-    } else if (isVideoUrl(abs.abs)) {
+    }
+    if (!embedFromHref && isVideoUrl(abs.abs)) {
       items.push(makeItem('video', abs.abs, {
         width: 0,
         height: 0,
@@ -1307,7 +1331,7 @@ function extractFromDocument(doc, source, baseUrl) {
         openUrl: abs.abs,
         el: a
       }, baseUrl));
-    } else if (isImageUrl(abs.abs)) {
+    } else if (!embedFromHref && isImageUrl(abs.abs)) {
       items.push(makeItem('img', abs.abs, {
         width: linkSize.w,
         height: linkSize.h,
