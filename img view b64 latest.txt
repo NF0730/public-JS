@@ -171,9 +171,16 @@ javascript:(function(){
 /* rev1.77:
  - detect embed URLs in anchor text when href points to a different asset URL
  */
+/* rev1.78:
+ - treat pbs.twimg.com/media ?format=jpg/png/... links as direct images
+ - skip text-embed fallback when href is direct image/video to keep media lightbox behavior
+ */
+/* rev1.79:
+ - keep direct-image LB path while adding INSTA hint styling (badge/frame) from anchor text links
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.77';
+const SCRIPT_REV = '1.79';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -709,6 +716,20 @@ function isImageUrl(u) {
   return IMG_EXT.test(s);
 }
 
+function isPbsMediaImageUrl(u) {
+  if (!u) return false;
+  let x;
+  try { x = new URL(String(u), location.href); } catch (e) { return false; }
+  if ((x.hostname || '').toLowerCase() !== 'pbs.twimg.com') return false;
+  if (!/^\/media\/[^/?#]+/i.test(x.pathname || '')) return false;
+  const fmt = (x.searchParams.get('format') || '').toLowerCase();
+  return /^(jpe?g|png|gif|webp|avif|bmp)$/.test(fmt);
+}
+
+function isDirectImageUrl(u) {
+  return isImageUrl(u) || isPbsMediaImageUrl(u);
+}
+
 function isImgTagCandidateUrl(u) {
   if (!u) return false;
   const s = String(u).trim();
@@ -994,7 +1015,7 @@ function passesFilter(item) {
   if (key === 'IMG') return item.kind === 'img';
   if (key === 'VIDEO') return item.kind === 'video';
   if (key === 'X') return item.kind === 'embed' && item.embedType === 'X';
-  if (key === 'INSTA') return item.kind === 'embed' && item.embedType === 'INSTA';
+  if (key === 'INSTA') return item.embedType === 'INSTA';
   if (key === 'IMGUR') return item.kind === 'embed' && item.embedType === 'IMGUR';
   if (key === 'YT') return item.kind === 'embed' && item.embedType === 'YT';
   if (key === 'TT') return item.kind === 'embed' && item.embedType === 'TT';
@@ -1293,19 +1314,23 @@ function extractFromDocument(doc, source, baseUrl) {
     const linkImg = a.querySelector ? a.querySelector('img') : null;
     const linkSize = linkImg ? getImgSize(linkImg) : { w: 0, h: 0 };
     const embedFromHref = getEmbedInfo(abs.abs);
+    const hrefIsDirectImage = isDirectImageUrl(abs.abs);
+    const hrefIsDirectMedia = hrefIsDirectImage || isVideoUrl(abs.abs);
+    const textUrl = findFirstHttpUrlInText(a.textContent || '');
+    let textAbs = null;
+    let textEmbed = null;
+    if (textUrl) {
+      textAbs = normalizeUrl(textUrl, baseUrl || location.href);
+      if (textAbs) textEmbed = getEmbedInfo(textAbs.abs);
+    }
     let embedFromText = null;
-    if (!embedFromHref) {
-      const textUrl = findFirstHttpUrlInText(a.textContent || '');
-      if (textUrl) {
-        const textAbs = normalizeUrl(textUrl, baseUrl || location.href);
-        if (textAbs) {
-          embedFromText = getEmbedInfo(textAbs.abs);
-          if (embedFromText && !embedFromText.openUrl) {
-            embedFromText = Object.assign({}, embedFromText, { openUrl: textAbs.abs });
-          }
-        }
+    if (!embedFromHref && !hrefIsDirectMedia && textEmbed) {
+      embedFromText = textEmbed;
+      if (embedFromText && !embedFromText.openUrl && textAbs) {
+        embedFromText = Object.assign({}, embedFromText, { openUrl: textAbs.abs });
       }
     }
+    const mediaHintType = (!embedFromHref && hrefIsDirectMedia && textEmbed && textEmbed.type === 'INSTA') ? 'INSTA' : '';
     const embed = embedFromHref || embedFromText;
     if (embed) {
       items.push(makeItem('embed', abs.abs, {
@@ -1329,9 +1354,10 @@ function extractFromDocument(doc, source, baseUrl) {
         poster: '',
         source: source,
         openUrl: abs.abs,
+        embedType: mediaHintType,
         el: a
       }, baseUrl));
-    } else if (!embedFromHref && isImageUrl(abs.abs)) {
+    } else if (!embedFromHref && hrefIsDirectImage) {
       items.push(makeItem('img', abs.abs, {
         width: linkSize.w,
         height: linkSize.h,
@@ -1339,6 +1365,7 @@ function extractFromDocument(doc, source, baseUrl) {
         origHidden: origHidden,
         source: source,
         openUrl: abs.abs,
+        embedType: mediaHintType,
         el: a
       }, baseUrl));
     }
@@ -2142,7 +2169,8 @@ function createShell() {
     .fmp-gpu { transform: translateZ(0); -webkit-transform: translateZ(0); backface-visibility: hidden; -webkit-backface-visibility: hidden; will-change: opacity, transform; }
     .thumb .ph { display: flex; align-items: center; justify-content: center; font-size: 11px; color: #9a9a9a; }
     .card[data-kind="video"]::after,
-    .card[data-kind="embed"]::after {
+    .card[data-kind="embed"]::after,
+    .card[data-kind="img"][data-etype="INSTA"]::after {
       content: '';
       position: absolute;
       inset: 0;
@@ -2157,14 +2185,19 @@ function createShell() {
     .card[data-kind="embed"][data-etype="YT"]::after { border-color: rgba(255,90,90,0.30); }
     .card[data-kind="embed"][data-etype="X"]::after { border-color: rgba(120,200,255,0.28); }
     .card[data-kind="embed"][data-etype="TT"]::after { border-color: rgba(255,120,210,0.26); }
-    .card[data-kind="embed"][data-etype="INSTA"]::after { border-color: rgba(190,120,255,0.26); }
+    .card[data-kind="embed"][data-etype="INSTA"]::after,
+    .card[data-kind="img"][data-etype="INSTA"]::after { border-color: rgba(245,96,64,0.34); }
     .card[data-kind="embed"][data-etype="IMGUR"]::after { border-color: rgba(140,255,160,0.22); }
     .card[data-kind="embed"][data-etype="OTHER"]::after { border-color: rgba(255,255,255,0.16); }
     .card[data-kind="video"] .badge { background: rgba(255,255,255,0.20); color: #fff; border: 1px solid rgba(255,255,255,0.35); }
     .card[data-kind="embed"][data-etype="YT"] .badge { background: rgba(255,90,90,0.85); color: #fff; }
     .card[data-kind="embed"][data-etype="X"] .badge { background: rgba(120,200,255,0.85); color: #111; }
     .card[data-kind="embed"][data-etype="TT"] .badge { background: rgba(255,120,210,0.82); color: #111; }
-    .card[data-kind="embed"][data-etype="INSTA"] .badge { background: rgba(190,120,255,0.82); color: #111; }
+    .card[data-kind="embed"][data-etype="INSTA"] .badge,
+    .card[data-kind="img"][data-etype="INSTA"] .badge {
+      background: linear-gradient(135deg, #f58529 0%, #dd2a7b 45%, #8134af 75%, #515bd4 100%);
+      color: #fff;
+    }
     .card[data-kind="embed"][data-etype="IMGUR"] .badge { background: rgba(140,255,160,0.80); color: #111; }
     .card[data-kind="embed"][data-etype="OTHER"] .badge { background: rgba(255,255,255,0.78); color: #111; }
     .ph-load { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.35); font-size: 11px; color: #bbb; pointer-events: none; transition: opacity 140ms ease; will-change: opacity; }
@@ -2214,7 +2247,7 @@ function createShell() {
     .lb[data-kind="embed"][data-etype="YT"] .lb-frame { border-color: rgba(255,90,90,0.30); }
     .lb[data-kind="embed"][data-etype="X"] .lb-frame { border-color: rgba(120,200,255,0.28); }
     .lb[data-kind="embed"][data-etype="TT"] .lb-frame { border-color: rgba(255,120,210,0.26); }
-    .lb[data-kind="embed"][data-etype="INSTA"] .lb-frame { border-color: rgba(190,120,255,0.26); }
+    .lb[data-etype="INSTA"] .lb-frame { border-color: rgba(245,96,64,0.34); }
     .lb[data-kind="embed"][data-etype="IMGUR"] .lb-frame { border-color: rgba(140,255,160,0.22); }
     .lb[data-kind="embed"][data-etype="OTHER"] .lb-frame { border-color: rgba(255,255,255,0.16); }
     .lb-frame img, .lb-frame video, .lb-frame canvas { max-width: 92vw; max-height: 78vh; object-fit: contain; display: block; }
@@ -3592,7 +3625,7 @@ function getMediaBadgeInfo(item) {
   if (item.kind === 'video') {
     return { text: '▶', full: 'VIDEO' };
   }
-  if (item.kind === 'embed') {
+  if (item.kind === 'embed' || item.embedType) {
     const t = ((item.embedType || '').toUpperCase()) || 'OTHER';
     let text = '?';
     if (t === 'X' || t === 'TT' || t === 'YT') text = t;
@@ -3609,7 +3642,7 @@ function createCard(item) {
   card.dataset.id = item.id;
   card.dataset.kind = item.kind || '';
   card.dataset.oh = item.__allHidden ? '1' : '0';
-  if (item.kind === 'embed') {
+  if (item.embedType) {
     card.dataset.etype = ((item.embedType || '').toUpperCase()) || 'OTHER';
   }
   const th = (state.env && state.env.isWide) ? 180 : 140;
@@ -3653,6 +3686,15 @@ function createCard(item) {
   if (item.kind === 'img') {
     const displayUrl = getDisplayUrl(item);
     appendThumbImage(displayUrl, false);
+    const badgeInfo = getMediaBadgeInfo(item);
+    if (badgeInfo) {
+      const badge = document.createElement('div');
+      badge.className = 'badge';
+      badge.textContent = badgeInfo.text;
+      badge.title = badgeInfo.full;
+      badge.setAttribute('aria-label', badgeInfo.full);
+      thumb.appendChild(badge);
+    }
   } else if (item.kind === 'video') {
     const ph = document.createElement('div');
     ph.className = 'ph';
@@ -3745,7 +3787,7 @@ function updateCard(item) {
   if (!item.card) return;
   item.card.dataset.kind = item.kind || '';
   item.card.dataset.oh = item.__allHidden ? '1' : '0';
-  if (item.kind === 'embed') {
+  if (item.embedType) {
     item.card.dataset.etype = ((item.embedType || '').toUpperCase()) || 'OTHER';
   } else {
     item.card.removeAttribute('data-etype');
@@ -3755,7 +3797,18 @@ function updateCard(item) {
     const playable = (item.kind === 'video' || item.kind === 'embed') && !thumbBtn.querySelector('iframe');
     thumbBtn.classList.toggle('is-playable', playable);
   }
-  const mediaBadge = item.card.querySelector('.thumb .badge');
+  let mediaBadge = item.card.querySelector('.thumb .badge');
+  if (!mediaBadge) {
+    const badgeInfo = getMediaBadgeInfo(item);
+    if (badgeInfo && thumbBtn) {
+      mediaBadge = document.createElement('div');
+      mediaBadge.className = 'badge';
+      mediaBadge.textContent = badgeInfo.text;
+      mediaBadge.title = badgeInfo.full;
+      mediaBadge.setAttribute('aria-label', badgeInfo.full);
+      thumbBtn.appendChild(mediaBadge);
+    }
+  }
   if (mediaBadge) {
     const badgeInfo = getMediaBadgeInfo(item);
     if (badgeInfo) {
@@ -3964,7 +4017,7 @@ function renderLightboxItem() {
   if (!item) return;
   if (state.lb.overlay) {
     state.lb.overlay.dataset.kind = item.kind || '';
-    if (item.kind === 'embed') {
+    if (item.embedType) {
       state.lb.overlay.dataset.etype = ((item.embedType || '').toUpperCase()) || 'OTHER';
     } else {
       state.lb.overlay.removeAttribute('data-etype');
