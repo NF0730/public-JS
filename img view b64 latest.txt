@@ -178,9 +178,12 @@ javascript:(function(){
 /* rev1.79:
  - keep direct-image LB path while adding INSTA hint styling (badge/frame) from anchor text links
  */
+/* rev1.80:
+ - preserve INSTA embedType hint across dedup merges (both better/non-better paths)
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.79';
+const SCRIPT_REV = '1.80';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -1680,6 +1683,7 @@ function mergeBest(target, candidate) {
   const keepCard = target.card;
   const keepDup = target.dupCount || 1;
   const keepUrl = target.url;
+  const keepEmbedType = target.embedType || '';
   const keepThumbLoaded = target.__thumbLoaded;
   const keepThumbLoading = target.__thumbLoading;
   const keepThumbRetry = target.__thumbRetry;
@@ -1697,6 +1701,7 @@ function mergeBest(target, candidate) {
   target.index = keepIndex;
   target.card = keepCard;
   target.dupCount = keepDup;
+  if (!target.embedType && keepEmbedType) target.embedType = keepEmbedType;
   target.__thumbLoaded = keepThumbLoaded;
   target.__thumbLoading = keepThumbLoading;
   target.__thumbRetry = keepThumbRetry;
@@ -1741,11 +1746,17 @@ function adoptItem(item) {
       return existing;
     }
     const prevAllHidden = !!existing.__allHidden;
+    let embedTypeChanged = false;
+    if (!existing.embedType && item.embedType) {
+      existing.embedType = item.embedType;
+      embedTypeChanged = true;
+    }
     existing.dupCount = (existing.dupCount || 1) + 1;
     existing.__allHidden = prevAllHidden && !!item.__allHidden;
     existing.__origHidden = existing.__allHidden;
     mergeDupCluster(existing, item);
     if (existing.card) updateDupBadge(existing);
+    if (embedTypeChanged && existing.card) updateCard(existing);
     if (prevAllHidden !== !!existing.__allHidden) {
       if (existing.card) updateCard(existing);
       scheduleApplyFilterSort('origHidden');
