@@ -178,12 +178,12 @@ javascript:(function(){
 /* rev1.79:
  - keep direct-image LB path while adding INSTA hint styling (badge/frame) from anchor text links
  */
-/* rev1.80:
- - preserve INSTA embedType hint across dedup merges (both better/non-better paths)
+/* rev1.82:
+ - split embed badge/frame gradients by site image colors (YT/X/TT/INSTA/IMGUR; VIDEO/OTHER unchanged)
  */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.80';
+const SCRIPT_REV = '1.82';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -2193,23 +2193,50 @@ function createShell() {
       -webkit-transform: translateZ(0);
       will-change: transform;
     }
-    .card[data-kind="embed"][data-etype="YT"]::after { border-color: rgba(255,90,90,0.30); }
-    .card[data-kind="embed"][data-etype="X"]::after { border-color: rgba(120,200,255,0.28); }
-    .card[data-kind="embed"][data-etype="TT"]::after { border-color: rgba(255,120,210,0.26); }
+    .card[data-kind="embed"][data-etype="YT"]::after {
+      border-color: transparent;
+      border-image: linear-gradient(135deg, #ff0033 0%, #ff4e45 55%, #b2071d 100%) 1;
+    }
+    .card[data-kind="embed"][data-etype="X"]::after {
+      border-color: transparent;
+      border-image: linear-gradient(135deg, #0f1419 0%, #15202b 55%, #1d9bf0 100%) 1;
+    }
+    .card[data-kind="embed"][data-etype="TT"]::after {
+      border-color: transparent;
+      border-image: linear-gradient(135deg, #00f2ea 0%, #111111 50%, #ff0050 100%) 1;
+    }
     .card[data-kind="embed"][data-etype="INSTA"]::after,
-    .card[data-kind="img"][data-etype="INSTA"]::after { border-color: rgba(245,96,64,0.34); }
-    .card[data-kind="embed"][data-etype="IMGUR"]::after { border-color: rgba(140,255,160,0.22); }
+    .card[data-kind="img"][data-etype="INSTA"]::after {
+      border-color: transparent;
+      border-image: linear-gradient(135deg, #f58529 0%, #dd2a7b 45%, #8134af 75%, #515bd4 100%) 1;
+    }
+    .card[data-kind="embed"][data-etype="IMGUR"]::after {
+      border-color: transparent;
+      border-image: linear-gradient(135deg, #1bb76e 0%, #2ddc85 55%, #0e8f55 100%) 1;
+    }
     .card[data-kind="embed"][data-etype="OTHER"]::after { border-color: rgba(255,255,255,0.16); }
     .card[data-kind="video"] .badge { background: rgba(255,255,255,0.20); color: #fff; border: 1px solid rgba(255,255,255,0.35); }
-    .card[data-kind="embed"][data-etype="YT"] .badge { background: rgba(255,90,90,0.85); color: #fff; }
-    .card[data-kind="embed"][data-etype="X"] .badge { background: rgba(120,200,255,0.85); color: #111; }
-    .card[data-kind="embed"][data-etype="TT"] .badge { background: rgba(255,120,210,0.82); color: #111; }
+    .card[data-kind="embed"][data-etype="YT"] .badge {
+      background: linear-gradient(135deg, #ff0033 0%, #ff4e45 55%, #b2071d 100%);
+      color: #fff;
+    }
+    .card[data-kind="embed"][data-etype="X"] .badge {
+      background: linear-gradient(135deg, #0f1419 0%, #15202b 55%, #1d9bf0 100%);
+      color: #fff;
+    }
+    .card[data-kind="embed"][data-etype="TT"] .badge {
+      background: linear-gradient(135deg, #00f2ea 0%, #111111 50%, #ff0050 100%);
+      color: #fff;
+    }
     .card[data-kind="embed"][data-etype="INSTA"] .badge,
     .card[data-kind="img"][data-etype="INSTA"] .badge {
       background: linear-gradient(135deg, #f58529 0%, #dd2a7b 45%, #8134af 75%, #515bd4 100%);
       color: #fff;
     }
-    .card[data-kind="embed"][data-etype="IMGUR"] .badge { background: rgba(140,255,160,0.80); color: #111; }
+    .card[data-kind="embed"][data-etype="IMGUR"] .badge {
+      background: linear-gradient(135deg, #1bb76e 0%, #2ddc85 55%, #0e8f55 100%);
+      color: #fff;
+    }
     .card[data-kind="embed"][data-etype="OTHER"] .badge { background: rgba(255,255,255,0.78); color: #111; }
     .ph-load { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.35); font-size: 11px; color: #bbb; pointer-events: none; transition: opacity 140ms ease; will-change: opacity; }
     .badge {
@@ -2255,11 +2282,26 @@ function createShell() {
     .lb { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.92); display: none; align-items: center; justify-content: center; padding: calc(env(safe-area-inset-top) + 16px) 12px calc(env(safe-area-inset-bottom) + 16px); }
     .lb.open { display: flex; }
     .lb-frame { max-width: 92vw; max-height: 78vh; border-radius: 16px; overflow: hidden; background: #000; display: flex; align-items: center; justify-content: center; position: relative; border: 2px solid rgba(255,255,255,0.16); box-sizing: border-box; }
-    .lb[data-kind="embed"][data-etype="YT"] .lb-frame { border-color: rgba(255,90,90,0.30); }
-    .lb[data-kind="embed"][data-etype="X"] .lb-frame { border-color: rgba(120,200,255,0.28); }
-    .lb[data-kind="embed"][data-etype="TT"] .lb-frame { border-color: rgba(255,120,210,0.26); }
-    .lb[data-etype="INSTA"] .lb-frame { border-color: rgba(245,96,64,0.34); }
-    .lb[data-kind="embed"][data-etype="IMGUR"] .lb-frame { border-color: rgba(140,255,160,0.22); }
+    .lb[data-kind="embed"][data-etype="YT"] .lb-frame {
+      border-color: transparent;
+      border-image: linear-gradient(135deg, #ff0033 0%, #ff4e45 55%, #b2071d 100%) 1;
+    }
+    .lb[data-kind="embed"][data-etype="X"] .lb-frame {
+      border-color: transparent;
+      border-image: linear-gradient(135deg, #0f1419 0%, #15202b 55%, #1d9bf0 100%) 1;
+    }
+    .lb[data-kind="embed"][data-etype="TT"] .lb-frame {
+      border-color: transparent;
+      border-image: linear-gradient(135deg, #00f2ea 0%, #111111 50%, #ff0050 100%) 1;
+    }
+    .lb[data-etype="INSTA"] .lb-frame {
+      border-color: transparent;
+      border-image: linear-gradient(135deg, #f58529 0%, #dd2a7b 45%, #8134af 75%, #515bd4 100%) 1;
+    }
+    .lb[data-kind="embed"][data-etype="IMGUR"] .lb-frame {
+      border-color: transparent;
+      border-image: linear-gradient(135deg, #1bb76e 0%, #2ddc85 55%, #0e8f55 100%) 1;
+    }
     .lb[data-kind="embed"][data-etype="OTHER"] .lb-frame { border-color: rgba(255,255,255,0.16); }
     .lb-frame img, .lb-frame video, .lb-frame canvas { max-width: 92vw; max-height: 78vh; object-fit: contain; display: block; }
     .lb-frame img { transition: opacity 120ms; transform: translateZ(0); -webkit-transform: translateZ(0); backface-visibility: hidden; -webkit-backface-visibility: hidden; will-change: opacity, transform; }
