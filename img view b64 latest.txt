@@ -181,9 +181,12 @@ javascript:(function(){
 /* rev1.82:
  - split embed badge/frame gradients by site image colors (YT/X/TT/INSTA/IMGUR; VIDEO/OTHER unchanged)
  */
+/* rev1.83:
+ - re-apply lockPage on delayed-visible UI at 800ms check so non-LB buttons remain tappable
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.82';
+const SCRIPT_REV = '1.83';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -5732,11 +5735,13 @@ async function main() {
       }
     })(0);
     setTimeout(function() {
-      if (!isUiVisible(state)) {
-        unlockPage(state);
-        cleanupUi();
-        showBootBadgeGlobal('panel not visible (scroll restored)');
+      if (isUiVisible(state)) {
+        lockPage(state);
+        return;
       }
+      unlockPage(state);
+      cleanupUi();
+      showBootBadgeGlobal('panel not visible (scroll restored)');
     }, 800);
 
     window.__FMP_ABORT__ = state.abort;
