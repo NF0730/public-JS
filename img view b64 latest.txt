@@ -184,9 +184,13 @@ javascript:(function(){
 /* rev1.83:
  - re-apply lockPage on delayed-visible UI at 800ms check so non-LB buttons remain tappable
  */
+/* rev1.84:
+ - boost thumbnail-like score for small square same-origin related-article links
+ - add +1 hint for 320x320-style URL size markers under related-square context
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.83';
+const SCRIPT_REV = '1.84';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -1190,13 +1194,34 @@ function scoreThumbnailLike(el, meta, absUrl) {
   if (/(thumb|thumbnail|related|ranking|recommend|popular|pickup|sidebar|widget|pager|list)/.test(cls)) score += 1;
 
   let anchor = null;
+  let anchorHref = '';
+  let relatedArticleSquare = false;
   if (el.tagName && el.tagName.toUpperCase() === 'A') anchor = el;
   else if (el.closest) anchor = el.closest('a[href]');
   if (anchor) {
     const href = (anchor.getAttribute('href') || '').trim();
+    anchorHref = href;
     if (href) {
       if (!isImageUrl(href) && !isVideoUrl(href)) score += 1;
       if (/\/archives\/\d+|\.html(?:$|[?#])|\/(entry|article|post|news)\//i.test(href)) score += 2;
+    }
+  }
+  if (w && h && anchorHref) {
+    const squareishSmall = w <= 340 && h <= 340 && Math.abs(w - h) <= 24;
+    if (squareishSmall) {
+      try {
+        const linkUrl = new URL(anchorHref, location.href);
+        const nonMediaLink = !isImageUrl(anchorHref) && !isVideoUrl(anchorHref);
+        const sameOrigin = linkUrl.origin === location.origin;
+        const linkPath = (linkUrl.pathname || '/').replace(/\/+$/, '') || '/';
+        const pagePath = (location.pathname || '/').replace(/\/+$/, '') || '/';
+        const samePath = linkPath === pagePath;
+        if (sameOrigin && samePath === false && nonMediaLink) {
+          relatedArticleSquare = true;
+          score += 4;
+          if (/(related|recommend|ranking|pickup|popular|list)/.test(cls)) score += 1;
+        }
+      } catch (e) {}
     }
   }
 
@@ -1219,6 +1244,10 @@ function scoreThumbnailLike(el, meta, absUrl) {
   if (sw > 0 && sh > 0 && hintedW && hintedH && hintedW <= sw && hintedH <= sh) {
     score += (state.cfg.thumbLikeMinScore || 5);
   }
+  const hasSquare320PathHint = /(?:^|[\/_-])(?:3[01]\d|320)x(?:3[01]\d|320)(?:$|[\/_.\-?&#])/.test(u);
+  const hasSquare320QueryHint = /[?&](?:w|width)=(?:3[01]\d|320)(?:[&#]|$)/.test(u) &&
+    /[?&](?:h|height)=(?:3[01]\d|320)(?:[&#]|$)/.test(u);
+  if (relatedArticleSquare && (hasSquare320PathHint || hasSquare320QueryHint)) score += 1;
   if (/(thumb|thumbnail|small|\/s\/|_thumb|\/resize\/\d+x\d+|[?&](w|h|width|height)=\d+)/.test(u)) score += 1;
 
   return score;
