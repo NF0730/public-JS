@@ -188,9 +188,13 @@ javascript:(function(){
  - boost thumbnail-like score for small square same-origin related-article links
  - add +1 hint for 320x320-style URL size markers under related-square context
  */
+/* rev1.85:
+ - normalize crawl candidates so same-host http links are upgraded to https on https pages
+ - keep same-origin crawl active for mixed-scheme next/prev links on custom-domain livedoor pages
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.84';
+const SCRIPT_REV = '1.85';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -1831,17 +1835,38 @@ function sameSite(url) {
 }
 
 function isSameOriginUrl(url, base) {
+  const abs = normalizeCrawlCandidateUrl(url, base || location.href);
+  if (!abs) return false;
   try {
-    const u = new URL(url, base || location.href);
+    const u = new URL(abs);
     return u.origin === location.origin;
   } catch (e) {
     return false;
   }
 }
 
+function normalizeCrawlCandidateUrl(url, base) {
+  try {
+    const u = new URL(url, base || location.href);
+    if (
+      location.protocol === 'https:' &&
+      u.protocol === 'http:' &&
+      u.hostname.toLowerCase() === location.hostname.toLowerCase() &&
+      (!u.port || u.port === '80')
+    ) {
+      u.protocol = 'https:';
+      u.port = '';
+    }
+    return u.toString();
+  } catch (e) {
+    return '';
+  }
+}
+
 function normalizeCrawlUrl(url) {
-  if (!url) return '';
-  let s = String(url).split('#')[0].trim();
+  const normalized = normalizeCrawlCandidateUrl(url, location.href);
+  if (!normalized) return '';
+  let s = String(normalized).split('#')[0].trim();
   if (!s) return '';
   if (s.endsWith('/') && !/^https?:\/\/[^/]+\/$/.test(s)) {
     s = s.replace(/\/+$/, '');
