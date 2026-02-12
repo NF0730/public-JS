@@ -215,9 +215,36 @@ javascript:(function(){
 /* rev1.91:
  - harden non-LB UI input by forcing bg passthrough/panel foreground and resilient button defaults
  */
+/* rev1.92:
+ - route non-LB UI taps via click/pointerup/touchend with ghost-click guard for hostile click hooks
+ */
+/* rev1.93:
+ - harden thumbnail tap path for LB open with touch/pointer fallback + ghost-click suppression
+ */
+/* rev1.94:
+ - keep Lightbox above panel by fixing lb z-index for panel-front layout introduced in rev1.91
+ */
+/* rev1.95:
+ - add tap-vs-drag threshold on thumbnail gestures to prevent LB opens while scrolling the grid
+ */
+/* rev1.96:
+ - suppress synthetic click after touch/pointer end and treat scroll delta as moved to avoid accidental LB opens
+ */
+/* rev1.97:
+ - restore thumbnail LB open trigger to rev1.92 click-only behavior while keeping rev1.94 LB z-index fix
+ */
+/* rev1.98:
+ - add touchend capture fallback for thumb tap when click is blocked, with strict move/scroll guard to keep scroll-safe behavior
+ */
+/* rev1.99:
+ - route LB control/backdrop taps via click/pointerup/touchend to avoid dead controls after first LB open
+ */
+/* rev1.100:
+ - dedupe LB non-click tap events (touchend/pointerup) so Prev/Next advances exactly one item per tap
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.91';
+const SCRIPT_REV = '1.100';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -2396,7 +2423,7 @@ function createShell() {
     .meta { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; font-size: 11px; color: #bbb; }
     .open { text-decoration: none; font-size: 14px; padding: 4px 6px; border-radius: 6px; border: 1px solid #555; color: #eee; }
     .inline { font-size: 11px; padding: 4px 6px; border-radius: 6px; border: 1px solid #555; background: #111; color: #eee; }
-    .lb { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.92); display: none; align-items: center; justify-content: center; padding: calc(env(safe-area-inset-top) + 16px) 12px calc(env(safe-area-inset-bottom) + 16px); }
+    .lb { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.92); display: none; align-items: center; justify-content: center; padding: calc(env(safe-area-inset-top) + 16px) 12px calc(env(safe-area-inset-bottom) + 16px); z-index: 2; pointer-events: auto; }
     .lb.open { display: flex; }
     .lb-frame { max-width: 92vw; max-height: 78vh; border-radius: 16px; overflow: hidden; background: #000; display: flex; align-items: center; justify-content: center; position: relative; border: 2px solid rgba(255,255,255,0.16); box-sizing: border-box; }
     .lb[data-kind="embed"][data-etype="YT"] .lb-frame {
@@ -2535,12 +2562,32 @@ function createShell() {
   state.ui.info = info;
   state.ui.progress = progress;
 
-  closeBtn.addEventListener('click', function(ev) {
+  function bindUiTap(el, handler) {
+    if (!el || typeof handler !== 'function') return;
+    let lastTouchLikeTs = 0;
+    const onTap = function(ev) {
+      const now = Date.now();
+      if (ev.type === 'click' && (now - lastTouchLikeTs) < 450) {
+        try { ev.preventDefault(); } catch (e) {}
+        return;
+      }
+      if (ev.type !== 'click') {
+        lastTouchLikeTs = now;
+        try { ev.preventDefault(); } catch (e) {}
+      }
+      handler(ev);
+    };
+    el.addEventListener('click', onTap);
+    el.addEventListener('pointerup', onTap);
+    el.addEventListener('touchend', onTap, { passive: false });
+  }
+
+  bindUiTap(closeBtn, function(ev) {
     ev.preventDefault();
     cleanupUi();
     finalize('ok', { reason: 'closed' });
   });
-  stopBtn.addEventListener('click', function(ev) {
+  bindUiTap(stopBtn, function(ev) {
     ev.preventDefault();
     abortAll('user');
     state.crawl.stop = true;
@@ -2553,13 +2600,15 @@ function createShell() {
     state.log.push('crawl', 'stopped visited=' + state.crawl.visited.size + ' inFlight=' + state.crawl.inFlight + ' limit=' + state.crawl.limit + ' errors=' + state.items.errorCount);
     updateProgress('idle', 'stopped');
   });
-  logBtn.addEventListener('click', function(ev) {
+  bindUiTap(logBtn, function(ev) {
     ev.preventDefault();
     if (state.log.copy) state.log.copy();
   });
 
-  filterBar.addEventListener('click', function(ev) {
-    const hiddenBtn = ev.target.closest('[data-action="toggle-hidden"]');
+  bindUiTap(filterBar, function(ev) {
+    const target = ev.target && ev.target.nodeType === 1 ? ev.target : (ev.target && ev.target.parentElement ? ev.target.parentElement : null);
+    if (!target || !target.closest) return;
+    const hiddenBtn = target.closest('[data-action="toggle-hidden"]');
     if (hiddenBtn) {
       state.cfg.hiddenHide = !state.cfg.hiddenHide;
       setInfoTemp(state.cfg.hiddenHide ? '非表示画像OFF' : '非表示画像ON', 1200);
@@ -2567,7 +2616,7 @@ function createShell() {
       updateChipUI();
       return;
     }
-    const actionBtn = ev.target.closest('[data-action="boost-crawl"]');
+    const actionBtn = target.closest('[data-action="boost-crawl"]');
     if (actionBtn) {
       if (state.crawl.allowUserBoost) {
         setInfoTemp('巡回拡張済', 900);
@@ -2578,7 +2627,7 @@ function createShell() {
       updateChipUI();
       return;
     }
-    const btn = ev.target.closest('[data-filter]');
+    const btn = target.closest('[data-filter]');
     if (!btn) return;
     const key = btn.getAttribute('data-filter');
     if (key === 'ALL') {
@@ -2591,8 +2640,10 @@ function createShell() {
     }
     setFilter(key);
   });
-  sortBar.addEventListener('click', function(ev) {
-    const btn = ev.target.closest('[data-sort]');
+  bindUiTap(sortBar, function(ev) {
+    const target = ev.target && ev.target.nodeType === 1 ? ev.target : (ev.target && ev.target.parentElement ? ev.target.parentElement : null);
+    if (!target || !target.closest) return;
+    const btn = target.closest('[data-sort]');
     if (!btn) return;
     setSort(btn.getAttribute('data-sort'));
   });
@@ -3943,7 +3994,105 @@ function createCard(item) {
   meta.appendChild(dim);
   meta.appendChild(open);
 
+  let thumbLastTouchLikeTs = 0;
+  let thumbIgnoreClickUntil = 0;
+  let thumbTouchActive = false;
+  let thumbTouchId = -1;
+  let thumbTouchMoved = false;
+  let thumbStartX = 0;
+  let thumbStartY = 0;
+  let thumbStartGridScrollTop = 0;
+  let thumbStartWindowScrollY = 0;
+  const thumbTapMoveThresholdPx = 8;
+  const thumbScrollMoveThresholdPx = 4;
+  const readGridScrollTop = function() {
+    const gridEl = state.ui && state.ui.grid;
+    return gridEl ? (gridEl.scrollTop || 0) : 0;
+  };
+  const readWindowScrollY = function() {
+    return window.pageYOffset || document.documentElement.scrollTop || 0;
+  };
+  const findTouchById = function(list, id) {
+    if (!list || !Number.isFinite(id)) return null;
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i];
+      if (t && t.identifier === id) return t;
+    }
+    return null;
+  };
+  const markTouchMovedByPoint = function(x, y) {
+    if (!thumbTouchActive) return;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (Math.abs(x - thumbStartX) > thumbTapMoveThresholdPx || Math.abs(y - thumbStartY) > thumbTapMoveThresholdPx) {
+      thumbTouchMoved = true;
+    }
+  };
+  const markTouchMovedByScroll = function() {
+    if (!thumbTouchActive) return false;
+    if (Math.abs(readGridScrollTop() - thumbStartGridScrollTop) > thumbScrollMoveThresholdPx) return true;
+    if (Math.abs(readWindowScrollY() - thumbStartWindowScrollY) > thumbScrollMoveThresholdPx) return true;
+    return false;
+  };
+  const clearThumbTouchTrack = function() {
+    window.removeEventListener('touchmove', onThumbTouchMoveCapture, true);
+    window.removeEventListener('touchend', onThumbTouchEndCapture, true);
+    window.removeEventListener('touchcancel', onThumbTouchCancelCapture, true);
+    thumbTouchActive = false;
+    thumbTouchId = -1;
+    thumbTouchMoved = false;
+    thumbStartX = 0;
+    thumbStartY = 0;
+    thumbStartGridScrollTop = 0;
+    thumbStartWindowScrollY = 0;
+  };
+  const onThumbTouchMoveCapture = function(ev) {
+    if (!thumbTouchActive) return;
+    const t = findTouchById(ev.touches, thumbTouchId) || findTouchById(ev.changedTouches, thumbTouchId);
+    if (!t) return;
+    markTouchMovedByPoint(t.clientX, t.clientY);
+    if (markTouchMovedByScroll()) thumbTouchMoved = true;
+  };
+  const onThumbTouchEndCapture = function(ev) {
+    if (!thumbTouchActive) return;
+    const t = findTouchById(ev.changedTouches, thumbTouchId);
+    if (!t) return;
+    markTouchMovedByPoint(t.clientX, t.clientY);
+    if (markTouchMovedByScroll()) thumbTouchMoved = true;
+    const moved = thumbTouchMoved;
+    const now = Date.now();
+    thumbLastTouchLikeTs = now;
+    thumbIgnoreClickUntil = now + 520;
+    clearThumbTouchTrack();
+    if (moved) return;
+    try { ev.preventDefault(); } catch (e) {}
+    openLightboxById(item.id);
+  };
+  const onThumbTouchCancelCapture = function() {
+    if (!thumbTouchActive) return;
+    thumbIgnoreClickUntil = Date.now() + 520;
+    clearThumbTouchTrack();
+  };
+  thumb.addEventListener('touchstart', function(ev) {
+    const t = ev.changedTouches && ev.changedTouches[0];
+    if (!t) return;
+    clearThumbTouchTrack();
+    thumbTouchActive = true;
+    thumbTouchId = t.identifier;
+    thumbTouchMoved = false;
+    thumbStartX = t.clientX;
+    thumbStartY = t.clientY;
+    thumbStartGridScrollTop = readGridScrollTop();
+    thumbStartWindowScrollY = readWindowScrollY();
+    window.addEventListener('touchmove', onThumbTouchMoveCapture, { capture: true, passive: true });
+    window.addEventListener('touchend', onThumbTouchEndCapture, { capture: true, passive: false });
+    window.addEventListener('touchcancel', onThumbTouchCancelCapture, { capture: true, passive: true });
+  }, { passive: true });
   thumb.addEventListener('click', function(ev) {
+    const now = Date.now();
+    if (now < thumbIgnoreClickUntil || (now - thumbLastTouchLikeTs) < 450) {
+      ev.preventDefault();
+      return;
+    }
     ev.preventDefault();
     openLightboxById(item.id);
   });
@@ -4086,6 +4235,33 @@ function updateDupBadge(item) {
 function createLightbox() {
   const lb = document.createElement('div');
   lb.className = 'lb';
+  lb.style.setProperty('z-index', '2', 'important');
+  lb.style.setProperty('pointer-events', 'auto', 'important');
+  function bindLbTap(el, handler) {
+    if (!el || typeof handler !== 'function') return;
+    let lastTouchLikeTs = 0;
+    let lastNonClickTs = 0;
+    const onTap = function(ev) {
+      const now = Date.now();
+      if (ev.type === 'click' && (now - lastTouchLikeTs) < 450) {
+        try { ev.preventDefault(); } catch (e) {}
+        return;
+      }
+      if (ev.type !== 'click') {
+        if ((now - lastNonClickTs) < 120) {
+          try { ev.preventDefault(); } catch (e) {}
+          return;
+        }
+        lastNonClickTs = now;
+        lastTouchLikeTs = now;
+        try { ev.preventDefault(); } catch (e) {}
+      }
+      handler(ev);
+    };
+    el.addEventListener('click', onTap);
+    el.addEventListener('pointerup', onTap);
+    el.addEventListener('touchend', onTap, { passive: false });
+  }
   const frame = document.createElement('div');
   frame.className = 'lb-frame';
   const badge = document.createElement('div');
@@ -4128,25 +4304,25 @@ function createLightbox() {
   lb.appendChild(controls);
   state.ui.wrap.appendChild(lb);
 
-  prevBtn.addEventListener('click', function(ev) {
+  bindLbTap(prevBtn, function(ev) {
     ev.preventDefault();
     moveLightbox(-1);
   });
-  nextBtn.addEventListener('click', function(ev) {
+  bindLbTap(nextBtn, function(ev) {
     ev.preventDefault();
     moveLightbox(1);
   });
-  closeBtn.addEventListener('click', function(ev) {
+  bindLbTap(closeBtn, function(ev) {
     ev.preventDefault();
     closeLightbox();
   });
-  openBtn.addEventListener('click', function(ev) {
+  bindLbTap(openBtn, function(ev) {
     ev.preventDefault();
     ev.stopPropagation();
     const it = state.lb.list[state.lb.index];
     if (it) openExternal(it.openUrl, 'lightbox');
   });
-  lb.addEventListener('click', function(ev) {
+  bindLbTap(lb, function(ev) {
     if (ev.target === lb) closeLightbox();
   });
 
