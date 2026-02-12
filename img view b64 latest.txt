@@ -204,9 +204,13 @@ javascript:(function(){
  - enable pager plan for custom-domain livedoor archive articles
  - infer max pager count from page-current text like 1/7 when only p=2 link is exposed
  */
+/* rev1.89:
+ - normalize imgur single-image URLs that include file extensions before building embed URLs
+ - keep IMGUR openUrl canonicalized to extension-free image page URLs
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.88';
+const SCRIPT_REV = '1.89';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -4710,10 +4714,16 @@ function getEmbedInfo(url) {
       openUrl: url
     };
   }
-  const im = /https?:\/\/imgur\.com\/(a|gallery)\/([^/?#]+)/i.exec(url);
+  const im = /https?:\/\/(?:www\.)?imgur\.com\/(a|gallery)\/([^/?#]+)/i.exec(url);
   if (im) return { type: 'IMGUR', url: 'https://imgur.com/' + im[1] + '/' + im[2] + '/embed' };
-  const im2 = /https?:\/\/imgur\.com\/([^/?#]+)/i.exec(url);
-  if (im2) return { type: 'IMGUR', url: 'https://imgur.com/' + im2[1] + '/embed' };
+  const im2 = /https?:\/\/(?:www\.)?imgur\.com\/([^/?#]+)/i.exec(url);
+  if (im2) {
+    const clean = (im2[1] || '').replace(/\.(?:jpe?g|png|gif|webp|bmp|avif)$/i, '');
+    if (clean) {
+      const openUrl = 'https://imgur.com/' + clean;
+      return { type: 'IMGUR', url: openUrl + '/embed', openUrl: openUrl };
+    }
+  }
   return null;
 }
 
