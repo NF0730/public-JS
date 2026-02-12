@@ -192,9 +192,21 @@ javascript:(function(){
  - normalize crawl candidates so same-host http links are upgraded to https on https pages
  - keep same-origin crawl active for mixed-scheme next/prev links on custom-domain livedoor pages
  */
+/* rev1.86:
+ - prioritize entry next/prev links in crawl queue to avoid early limit exhaustion on noisy pages
+ - dedupe crawl candidates by normalized URL while preserving priority order
+ */
+/* rev1.87:
+ - pre-boost crawl limit on dense-link pages when image count is still low
+ - add crawl pre-boost log to verify boosted start conditions
+ */
+/* rev1.88:
+ - enable pager plan for custom-domain livedoor archive articles
+ - infer max pager count from page-current text like 1/7 when only p=2 link is exposed
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.85';
+const SCRIPT_REV = '1.88';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -860,8 +872,10 @@ function normalizeUrl(raw, base) {
 function isLivedoorArticle(url) {
   try {
     const u = new URL(url, location.href);
-    if (u.hostname.toLowerCase() !== 'blog.livedoor.jp') return false;
-    return /\/archives\/\d+\.html$/i.test(u.pathname || '');
+    if (!/\/archives\/\d+\.html$/i.test(u.pathname || '')) return false;
+    const host = u.hostname.toLowerCase();
+    if (host === 'blog.livedoor.jp') return true;
+    return host === location.hostname.toLowerCase();
   } catch (e) {
     return false;
   }
@@ -1900,25 +1914,35 @@ function collectCrawlLinksFromDocument(doc, baseUrl) {
     if (preferSameOrigin) return isSameOriginUrl(u.toString(), base);
     return sameSite(u.toString());
   }
-  const linkNext = Array.from(doc.querySelectorAll('link[rel~=\"next\"][href], a[rel~=\"next\"][href]'));
-  linkNext.forEach(function(a) {
-    const href = a.getAttribute('href');
+  function pushCandidate(list, href) {
     if (!href) return;
     let u;
     try { u = new URL(href, base); } catch (e) { return; }
     if (!allowUrl(u)) return;
-    nexts.push(u.toString());
+    list.push(u.toString());
+  }
+  const priLinks = Array.from(doc.querySelectorAll(
+    'link[rel~=\"next\"][href], a[rel~=\"next\"][href], a[rel~=\"prev\"][href], #entryPageNav a[href], li.next > a[href], li.prev > a[href], a.next[href], a.prev[href]'
+  ));
+  priLinks.forEach(function(a) {
+    pushCandidate(nexts, a.getAttribute('href'));
   });
   const links = Array.from(doc.querySelectorAll('a[href]'));
   links.forEach(function(a) {
     const href = a.getAttribute('href');
     if (!href || href.startsWith('#')) return;
-    let u;
-    try { u = new URL(href, base); } catch (e) { return; }
-    if (!allowUrl(u)) return;
-    out.push(u.toString());
+    pushCandidate(out, href);
   });
-  return nexts.concat(out);
+  const merged = nexts.concat(out);
+  const uniq = [];
+  const seen = new Set();
+  merged.forEach(function(raw) {
+    const key = normalizeCrawlUrl(raw) || raw;
+    if (seen.has(key)) return;
+    seen.add(key);
+    uniq.push(raw);
+  });
+  return uniq;
 }
 
 function collectCrawlLinks() {
@@ -1932,6 +1956,7 @@ function collectCrawlLinks() {
 
 function buildPagerPlan(baseUrl, doc) {
   if (!isLivedoorArticle(baseUrl)) return null;
+  const cap = state.cfg.crawlArticleMaxPages || 30;
   let baseKey = '';
   try {
     const u = new URL(baseUrl, location.href);
@@ -1959,7 +1984,19 @@ function buildPagerPlan(baseUrl, doc) {
     if (!param) param = page ? 'page' : 'p';
     if (n > max) max = n;
   });
-  const cap = state.cfg.crawlArticleMaxPages || 30;
+  if (max < 2) {
+    const pagerTexts = Array.from(doc.querySelectorAll(
+      '.page-current, .article-inner-pager, .pager, .pagination, [class*=\"pager\"], [class*=\"paging\"], [id*=\"pager\"]'
+    ))
+      .map(function(el) { return String(el.textContent || '').replace(/\s+/g, ' ').trim(); });
+    pagerTexts.forEach(function(text) {
+      const m = /(\d{1,3})\s*\/\s*(\d{1,3})/.exec(text);
+      if (!m) return;
+      const total = parseInt(m[2] || '0', 10) || 0;
+      if (total > max) max = total;
+    });
+    if (max > 1 && !param) param = 'p';
+  }
   if (max > cap) max = cap;
   if (max < 2) return null;
   if (!param) param = 'p';
@@ -5845,6 +5882,19 @@ async function main() {
     const hasLinks = linkCandidates.length > 0;
     const mediaDoc = isMediaDocument(document);
     const lightCrawl = hasLinks && !mediaDoc;
+    const preBoostImgLimit = Math.max((state.cfg.htmlMinItems || 0) * 4, 80);
+    const shouldPreBoost = (
+      !mediaDoc &&
+      hasLinks &&
+      !state.crawl.allowUserBoost &&
+      linkCandidates.length >= (state.cfg.crawlBaseLimit * 4) &&
+      bodyLinks >= state.cfg.crawlBaseLimit &&
+      imgCount < preBoostImgLimit
+    );
+    if (shouldPreBoost) {
+      state.crawl.allowUserBoost = true;
+      state.log.push('crawl', 'pre-boost links=' + linkCandidates.length + ' bodyLinks=' + bodyLinks + ' img=' + imgCount + ' limit=' + (state.cfg.crawlBaseLimit + state.cfg.crawlBoost));
+    }
     if (!mediaDoc && (needByCount || lightCrawl || imgCount < 12 || (pagerPlan && pagerPlan.urls && pagerPlan.urls.length))) {
       const delay = needByCount ? 0 : 120;
       state.log.push('crawl', 'trigger need=' + needByCount + ' links=' + linkCandidates.length + ' bodyLinks=' + bodyLinks + ' img=' + imgCount + ' pager=' + (pagerPlan && pagerPlan.urls ? pagerPlan.urls.length : 0));
