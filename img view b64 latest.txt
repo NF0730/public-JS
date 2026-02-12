@@ -212,9 +212,12 @@ javascript:(function(){
  - treat direct image/video URLs found in link text as media candidates when href is a lite/article wrapper
  - preserve existing embed detection while adding text-media fallback for missed source links
  */
+/* rev1.91:
+ - harden non-LB UI input by forcing bg passthrough/panel foreground and resilient button defaults
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.90';
+const SCRIPT_REV = '1.91';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -2251,8 +2254,8 @@ function createShell() {
     .wrap { position: fixed; inset: 0; font-family: "Hiragino Sans", "Avenir Next", "SF Pro Text", sans-serif; color: #eee; --ui-scale: 1; --lb-scale: 1; }
     .wrap.is-iphone { --ui-scale: 1.00; --lb-scale: 1.05; }
     .wrap.is-ipad { --ui-scale: 0.92; --lb-scale: 1.18; }
-    .bg { position: absolute; inset: 0; background: #000; }
-    .panel { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px; padding: calc(env(safe-area-inset-top) + 10px) 10px calc(env(safe-area-inset-bottom) + 10px); background: rgba(0, 0, 0, 0.92); }
+    .bg { position: absolute; inset: 0; background: #000; pointer-events: none; z-index: 0; }
+    .panel { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px; padding: calc(env(safe-area-inset-top) + 10px) 10px calc(env(safe-area-inset-bottom) + 10px); background: rgba(0, 0, 0, 0.92); pointer-events: auto; z-index: 1; }
     .header { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
     .title { font-size: calc(16px * var(--ui-scale)); font-weight: 700; letter-spacing: 0.02em; }
     .btns { display: flex; gap: 6px; }
@@ -2452,8 +2455,12 @@ function createShell() {
   if (state.env.isIPad) wrap.classList.add('is-ipad');
   const bg = document.createElement('div');
   bg.className = 'bg';
+  bg.style.setProperty('pointer-events', 'none', 'important');
+  bg.style.setProperty('z-index', '0', 'important');
   const panel = document.createElement('div');
   panel.className = 'panel';
+  panel.style.setProperty('pointer-events', 'auto', 'important');
+  panel.style.setProperty('z-index', '1', 'important');
 
   const header = document.createElement('div');
   header.className = 'header';
@@ -2744,8 +2751,11 @@ function showBootBadgeGlobal(message) {
 /* [11] cards */
 function mkBtn(text, cls) {
   const btn = document.createElement('button');
+  btn.type = 'button';
   btn.textContent = text;
   btn.className = cls;
+  btn.style.pointerEvents = 'auto';
+  btn.style.touchAction = 'manipulation';
   return btn;
 }
 
