@@ -242,9 +242,12 @@ javascript:(function(){
 /* rev1.100:
  - dedupe LB non-click tap events (touchend/pointerup) so Prev/Next advances exactly one item per tap
  */
+/* rev1.101:
+ - dedupe minkch image variants like ...12345s.jpg and ...12345.jpg into one canonical image key
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.100';
+const SCRIPT_REV = '1.101';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -951,6 +954,9 @@ function canonicalMediaKey(absUrl, kind) {
   if (host === 'i.imgur.com') {
     const p = u.pathname.replace(/([a-z0-9])([sbtmlh])(\.[a-z0-9]+)$/i, '$1$3');
     u.pathname = p;
+  }
+  if (host === 'imgs.minkch.com') {
+    u.pathname = (u.pathname || '').replace(/^(\/imgs\/(?:d)?\d{8,14}\/\d+)([smt])(\.[a-z0-9]+)$/i, '$1$3');
   }
   if (/blogimg\.jp$/.test(host)) {
     let p = u.pathname || '';
