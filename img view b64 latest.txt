@@ -208,9 +208,13 @@ javascript:(function(){
  - normalize imgur single-image URLs that include file extensions before building embed URLs
  - keep IMGUR openUrl canonicalized to extension-free image page URLs
  */
+/* rev1.90:
+ - treat direct image/video URLs found in link text as media candidates when href is a lite/article wrapper
+ - preserve existing embed detection while adding text-media fallback for missed source links
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.89';
+const SCRIPT_REV = '1.90';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -1372,13 +1376,20 @@ function extractFromDocument(doc, source, baseUrl) {
     const linkSize = linkImg ? getImgSize(linkImg) : { w: 0, h: 0 };
     const embedFromHref = getEmbedInfo(abs.abs);
     const hrefIsDirectImage = isDirectImageUrl(abs.abs);
-    const hrefIsDirectMedia = hrefIsDirectImage || isVideoUrl(abs.abs);
+    const hrefIsDirectVideo = isVideoUrl(abs.abs);
+    const hrefIsDirectMedia = hrefIsDirectImage || hrefIsDirectVideo;
     const textUrl = findFirstHttpUrlInText(a.textContent || '');
     let textAbs = null;
     let textEmbed = null;
+    let textIsDirectImage = false;
+    let textIsDirectVideo = false;
     if (textUrl) {
       textAbs = normalizeUrl(textUrl, baseUrl || location.href);
-      if (textAbs) textEmbed = getEmbedInfo(textAbs.abs);
+      if (textAbs) {
+        textEmbed = getEmbedInfo(textAbs.abs);
+        textIsDirectImage = isDirectImageUrl(textAbs.abs);
+        textIsDirectVideo = isVideoUrl(textAbs.abs);
+      }
     }
     let embedFromText = null;
     if (!embedFromHref && !hrefIsDirectMedia && textEmbed) {
@@ -1387,7 +1398,10 @@ function extractFromDocument(doc, source, baseUrl) {
         embedFromText = Object.assign({}, embedFromText, { openUrl: textAbs.abs });
       }
     }
-    const mediaHintType = (!embedFromHref && hrefIsDirectMedia && textEmbed && textEmbed.type === 'INSTA') ? 'INSTA' : '';
+    const textIsDirectMedia = textIsDirectImage || textIsDirectVideo;
+    const directVideoFromText = !hrefIsDirectMedia && textIsDirectVideo;
+    const directImageFromText = !hrefIsDirectMedia && textIsDirectImage;
+    const mediaHintType = (!embedFromHref && (hrefIsDirectMedia || textIsDirectMedia) && textEmbed && textEmbed.type === 'INSTA') ? 'INSTA' : '';
     const embed = embedFromHref || embedFromText;
     if (embed) {
       items.push(makeItem('embed', abs.abs, {
@@ -1402,26 +1416,28 @@ function extractFromDocument(doc, source, baseUrl) {
         el: a
       }, baseUrl));
     }
-    if (!embedFromHref && isVideoUrl(abs.abs)) {
-      items.push(makeItem('video', abs.abs, {
+    if (!embedFromHref && (hrefIsDirectVideo || directVideoFromText)) {
+      const mediaUrl = directVideoFromText && textAbs ? textAbs.abs : abs.abs;
+      items.push(makeItem('video', mediaUrl, {
         width: 0,
         height: 0,
         scope: scope,
         origHidden: origHidden,
         poster: '',
         source: source,
-        openUrl: abs.abs,
+        openUrl: mediaUrl,
         embedType: mediaHintType,
         el: a
       }, baseUrl));
-    } else if (!embedFromHref && hrefIsDirectImage) {
-      items.push(makeItem('img', abs.abs, {
+    } else if (!embedFromHref && (hrefIsDirectImage || directImageFromText)) {
+      const mediaUrl = directImageFromText && textAbs ? textAbs.abs : abs.abs;
+      items.push(makeItem('img', mediaUrl, {
         width: linkSize.w,
         height: linkSize.h,
         scope: scope,
         origHidden: origHidden,
         source: source,
-        openUrl: abs.abs,
+        openUrl: mediaUrl,
         embedType: mediaHintType,
         el: a
       }, baseUrl));
