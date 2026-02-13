@@ -251,7 +251,7 @@ javascript:(function(){
  */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101.1';
+const SCRIPT_REV = '1.101.2';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -2220,6 +2220,7 @@ async function pumpCrawl() {
   }
   if (state.crawl.inFlight === 0 && (state.crawl.queue.length === 0 || state.crawl.visited.size >= state.crawl.limit)) {
     state.crawl.done = true;
+    if (state.ui.stopBtn) state.ui.stopBtn.classList.remove('danger');
     updateProgress('idle', 'done');
     state.log.push('crawl', 'done visited=' + state.crawl.visited.size + ' inFlight=' + state.crawl.inFlight + ' limit=' + state.crawl.limit + ' errors=' + state.items.errorCount);
     maybeFinalize();
@@ -2524,6 +2525,7 @@ function createShell() {
   state.ui.wrap = wrap;
   state.ui.header = header;
   state.ui.filterBar = filterBar;
+  state.ui.stopBtn = stopBtn;
   state.ui.logBtn = logBtn;
   state.ui.grid = grid;
   state.ui.info = info;
