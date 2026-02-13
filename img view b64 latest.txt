@@ -245,9 +245,13 @@ javascript:(function(){
 /* rev1.101:
  - dedupe minkch image variants like ...12345s.jpg and ...12345.jpg into one canonical image key
  */
+/* rev1.101.1:
+ - fix non-LB chip taps by deduping touchend/pointerup so hidden toggle does not flip back
+ - remove SORT chips/state hooks from panel UI
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101';
+const SCRIPT_REV = '1.101.1';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -275,7 +279,6 @@ const state = {
     wrap: null,
     header: null,
     filterBar: null,
-    sortBar: null,
     logBtn: null,
     grid: null,
     info: null,
@@ -301,8 +304,7 @@ const state = {
     boundVis: false,
     onVisibilityChange: null,
     onPageShow: null,
-    onFocus: null,
-    domSort: 'DEFAULT'
+    onFocus: null
   },
   lb: {
     open: false,
@@ -660,7 +662,6 @@ function initCfg() {
     }
   };
   state.filter = { key: 'ALL', opts: {} };
-  state.sort = 'DEFAULT';
 }
 
 /* [03] logger */
@@ -688,7 +689,6 @@ function initLogger() {
       'hidden: ' + hidden,
       'error: ' + state.items.errorCount,
       'filter: ' + (state.filter && state.filter.key ? state.filter.key : ''),
-      'sort: ' + state.sort,
       'hidden_reason: ' + (reasonSummary || '(none)')
     ].join('\n');
     const ring = state.log.ring.length ? state.log.ring.join('\n') : '(none)';
@@ -1112,25 +1112,6 @@ function applyFilterSort() {
       }
     }
   });
-  const prevSort = state.ui.domSort || 'DEFAULT';
-  const needReorder = (state.sort === 'SIZE') || (prevSort !== state.sort);
-  if (needReorder) {
-    const items = list.slice();
-    if (state.sort === 'SIZE') {
-      items.sort(function(a, b) {
-        if (b.area !== a.area) return b.area - a.area;
-        return a.index - b.index;
-      });
-    } else {
-      items.sort(function(a, b) { return a.index - b.index; });
-    }
-    const frag = document.createDocumentFragment();
-    items.forEach(function(it) {
-      if (it.card && !it.__failed) frag.appendChild(it.card);
-    });
-    state.ui.grid.appendChild(frag);
-    state.ui.domSort = state.sort;
-  }
   applyErrorVis();
   updateInfo();
   updateChipUI();
@@ -1138,9 +1119,8 @@ function applyFilterSort() {
 }
 
 function updateChipUI() {
-  if (!state.ui.filterBar || !state.ui.sortBar) return;
+  if (!state.ui.filterBar) return;
   const f = state.filter.key;
-  const s = state.sort;
   Array.from(state.ui.filterBar.querySelectorAll('[data-filter]')).forEach(function(btn) {
     btn.classList.toggle('active', btn.getAttribute('data-filter') === f);
   });
@@ -1152,20 +1132,11 @@ function updateChipUI() {
   if (hiddenBtn) {
     hiddenBtn.classList.toggle('active', !state.cfg.hiddenHide);
   }
-  Array.from(state.ui.sortBar.querySelectorAll('[data-sort]')).forEach(function(btn) {
-    btn.classList.toggle('active', btn.getAttribute('data-sort') === s);
-  });
 }
 
 function setFilter(key, opts) {
   state.filter = { key: key, opts: opts || {} };
   window.__FMP_FILTER__ = state.filter;
-  applyFilterSort();
-}
-
-function setSort(key) {
-  state.sort = key || 'DEFAULT';
-  window.__FMP_SORT__ = state.sort;
   applyFilterSort();
 }
 
@@ -2526,14 +2497,6 @@ function createShell() {
   boostChip.setAttribute('data-action', 'boost-crawl');
   filterBar.appendChild(boostChip);
 
-  const sortBar = document.createElement('div');
-  sortBar.className = 'chips';
-  ['DEFAULT', 'SIZE'].forEach(function(key) {
-    const chip = mkBtn(key, 'chip');
-    chip.setAttribute('data-sort', key);
-    sortBar.appendChild(chip);
-  });
-
   const info = document.createElement('div');
   info.className = 'info';
   info.textContent = 'loading...';
@@ -2547,7 +2510,6 @@ function createShell() {
 
   panel.appendChild(header);
   panel.appendChild(filterBar);
-  panel.appendChild(sortBar);
   panel.appendChild(info);
   panel.appendChild(progress);
   panel.appendChild(grid);
@@ -2562,7 +2524,6 @@ function createShell() {
   state.ui.wrap = wrap;
   state.ui.header = header;
   state.ui.filterBar = filterBar;
-  state.ui.sortBar = sortBar;
   state.ui.logBtn = logBtn;
   state.ui.grid = grid;
   state.ui.info = info;
@@ -2571,6 +2532,7 @@ function createShell() {
   function bindUiTap(el, handler) {
     if (!el || typeof handler !== 'function') return;
     let lastTouchLikeTs = 0;
+    let lastNonClickTs = 0;
     const onTap = function(ev) {
       const now = Date.now();
       if (ev.type === 'click' && (now - lastTouchLikeTs) < 450) {
@@ -2578,6 +2540,11 @@ function createShell() {
         return;
       }
       if (ev.type !== 'click') {
+        if ((now - lastNonClickTs) < 120) {
+          try { ev.preventDefault(); } catch (e) {}
+          return;
+        }
+        lastNonClickTs = now;
         lastTouchLikeTs = now;
         try { ev.preventDefault(); } catch (e) {}
       }
@@ -2645,13 +2612,6 @@ function createShell() {
       state.ui.lastAllTap = now;
     }
     setFilter(key);
-  });
-  bindUiTap(sortBar, function(ev) {
-    const target = ev.target && ev.target.nodeType === 1 ? ev.target : (ev.target && ev.target.parentElement ? ev.target.parentElement : null);
-    if (!target || !target.closest) return;
-    const btn = target.closest('[data-sort]');
-    if (!btn) return;
-    setSort(btn.getAttribute('data-sort'));
   });
 
   state.ui.progressTimer = setInterval(function() {
@@ -6060,7 +6020,6 @@ async function main() {
     window.__FMP_SEEN_ORDER__ = state.seen.order;
     window.__FMP_GROUP_BEST__ = state.groupBest;
     window.__FMP_FILTER__ = state.filter;
-    window.__FMP_SORT__ = state.sort;
     window.__FMP_STOP_CRAWL__ = abortAll;
     window.__FMP_SET_FILTER__ = setFilter;
     window.__FMP_APPLY_FILTER_SORT__ = applyFilterSort;
