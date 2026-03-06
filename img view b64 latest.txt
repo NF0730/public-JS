@@ -249,9 +249,12 @@ javascript:(function(){
  - fix non-LB chip taps by deduping touchend/pointerup so hidden toggle does not flip back
  - remove SORT chips/state hooks from panel UI
  */
+/* rev1.101.3:
+ - switch crawl queue pop path to head-index compaction to avoid shift() hot-path cost
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101.2';
+const SCRIPT_REV = '1.101.3';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -359,6 +362,7 @@ const state = {
   },
   crawl: {
     queue: [],
+    queueHead: 0,
     queueDedup: new Set(),
     visited: new Set(),
     inFlight: 0,
@@ -1915,11 +1919,44 @@ function normalizeCrawlUrl(url) {
   return s;
 }
 
+function crawlQueueLength() {
+  if (!state.crawl) return 0;
+  const q = state.crawl.queue || [];
+  const head = state.crawl.queueHead || 0;
+  return Math.max(0, q.length - head);
+}
+
+function compactCrawlQueue() {
+  if (!state.crawl) return;
+  const q = state.crawl.queue || [];
+  const head = state.crawl.queueHead || 0;
+  if (!q.length || head >= q.length) {
+    state.crawl.queue = [];
+    state.crawl.queueHead = 0;
+    return;
+  }
+  if (head > 32 && head * 2 >= q.length) {
+    state.crawl.queue = q.slice(head);
+    state.crawl.queueHead = 0;
+  }
+}
+
+function popCrawlQueue() {
+  if (!state.crawl) return '';
+  const q = state.crawl.queue || [];
+  const head = state.crawl.queueHead || 0;
+  if (head >= q.length) return '';
+  state.crawl.queueHead = head + 1;
+  const next = q[head] || '';
+  compactCrawlQueue();
+  return next;
+}
+
 function enqueueCrawlLinks(urls) {
   if (!urls || !urls.length) return;
   const maxQ = state.cfg.crawlMaxQueue || 200;
   urls.forEach(function(raw) {
-    if (state.crawl.queue.length >= maxQ) return;
+    if (crawlQueueLength() >= maxQ) return;
     const clean = normalizeCrawlUrl(raw);
     if (!clean) return;
     if (state.crawl.visited.has(clean)) return;
@@ -2172,6 +2209,7 @@ async function startCrawl() {
   if (state.crawl.started) return;
   state.crawl.started = true;
   state.crawl.queue = [];
+  state.crawl.queueHead = 0;
   state.crawl.queueDedup.clear();
   state.crawl.mode = '';
   state.crawl.pagerBase = '';
@@ -2187,9 +2225,9 @@ async function startCrawl() {
   }
   state.crawl.limit = state.cfg.crawlBaseLimit + (state.crawl.allowUserBoost ? state.cfg.crawlBoost : 0);
   if (state.crawl.mode === 'pager') {
-    state.crawl.limit = Math.max(state.crawl.limit, state.crawl.queue.length + 2);
+    state.crawl.limit = Math.max(state.crawl.limit, crawlQueueLength() + 2);
   }
-  state.log.push('crawl', 'start mode=' + (state.crawl.mode || 'normal') + ' queue=' + state.crawl.queue.length + ' limit=' + state.crawl.limit + ' visited=' + state.crawl.visited.size + ' inFlight=' + state.crawl.inFlight + ' errors=' + state.items.errorCount);
+  state.log.push('crawl', 'start mode=' + (state.crawl.mode || 'normal') + ' queue=' + crawlQueueLength() + ' limit=' + state.crawl.limit + ' visited=' + state.crawl.visited.size + ' inFlight=' + state.crawl.inFlight + ' errors=' + state.items.errorCount);
   if (state.crawl.timer) clearTimeout(state.crawl.timer);
   state.crawl.timer = setTimeout(function() { state.crawl.timer = 0; pumpCrawl(); }, 0);
 }
@@ -2200,9 +2238,10 @@ async function pumpCrawl() {
     maybeFinalize();
     return;
   }
-  while (state.crawl.inFlight < state.cfg.crawlConcurrent && state.crawl.queue.length) {
+  while (state.crawl.inFlight < state.cfg.crawlConcurrent && crawlQueueLength()) {
     if (state.crawl.visited.size >= state.crawl.limit) break;
-    const url = state.crawl.queue.shift();
+    const url = popCrawlQueue();
+    if (!url) continue;
     if (state.crawl.visited.has(url)) continue;
     state.crawl.visited.add(url);
     crawlFetch(url).then(pumpCrawl);
@@ -2218,7 +2257,7 @@ async function pumpCrawl() {
       }
     }
   }
-  if (state.crawl.inFlight === 0 && (state.crawl.queue.length === 0 || state.crawl.visited.size >= state.crawl.limit)) {
+  if (state.crawl.inFlight === 0 && (crawlQueueLength() === 0 || state.crawl.visited.size >= state.crawl.limit)) {
     state.crawl.done = true;
     if (state.ui.stopBtn) state.ui.stopBtn.classList.remove('danger');
     updateProgress('idle', 'done');
@@ -2567,6 +2606,7 @@ function createShell() {
     abortAll('user');
     state.crawl.stop = true;
     state.crawl.queue.length = 0;
+    state.crawl.queueHead = 0;
     state.crawl.queueDedup.clear();
     if (state.crawl.timer) {
       clearTimeout(state.crawl.timer);
