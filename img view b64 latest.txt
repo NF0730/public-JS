@@ -252,9 +252,17 @@ javascript:(function(){
 /* rev1.101.3:
  - switch crawl queue pop path to head-index compaction to avoid shift() hot-path cost
  */
+/* rev1.101.4:
+ - route thumbnail-like images to default-hidden bucket instead of noise bucket
+ - default-hide same-site different-page link thumbnails under the existing hidden toggle
+ */
+/* rev1.101.5:
+ - start IO thumb enqueue at threshold 0 with a small IO rootMargin based on fallback prefetch logic
+ - raise iPhone scroll-time thumb concurrency from 1 to 2
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101.3';
+const SCRIPT_REV = '1.101.5';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -605,6 +613,7 @@ function initCfg() {
     thumbConcurrentIphone: 3,
     thumbConcurrentIpad: 4,
     thumbRootMarginPx: 900,
+    thumbIoRootMarginPx: 140,
     thumbScrollPauseMs: 140,
     thumbScrollResumeMs: 160,
     thumbScrollEndScanMs: 220,
@@ -1103,7 +1112,7 @@ function applyFilterSort() {
   const list = state.items.list;
   list.forEach(function(it) {
     const hideNoise = state.cfg.noiseHide && it.__isNoise;
-    const hideHidden = state.cfg.hiddenHide && it.__allHidden;
+    const hideHidden = state.cfg.hiddenHide && (it.__allHidden || it.__autoHidden);
     const failed = !!it.__failed;
     const show = passesFilter(it) && !hideNoise && !it.__hashDup && !failed && !hideHidden;
     it.__hideReason = show ? '' : getHideReasonCode(it);
@@ -1203,6 +1212,16 @@ function isOriginallyHidden(el) {
   return false;
 }
 
+function getDocumentCompareKey(url, baseUrl) {
+  try {
+    const u = new URL(String(url), baseUrl || location.href);
+    const path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+    return u.origin + path + (u.search || '');
+  } catch (e) {
+    return '';
+  }
+}
+
 function scoreThumbnailLike(el, meta, absUrl) {
   if (!el || el.nodeType !== 1) return 0;
   const w = (meta && meta.width) ? meta.width : 0;
@@ -1250,10 +1269,8 @@ function scoreThumbnailLike(el, meta, absUrl) {
         const linkUrl = new URL(anchorHref, location.href);
         const nonMediaLink = !isImageUrl(anchorHref) && !isVideoUrl(anchorHref);
         const sameOrigin = linkUrl.origin === location.origin;
-        const linkPath = (linkUrl.pathname || '/').replace(/\/+$/, '') || '/';
-        const pagePath = (location.pathname || '/').replace(/\/+$/, '') || '/';
-        const samePath = linkPath === pagePath;
-        if (sameOrigin && samePath === false && nonMediaLink) {
+        const sameDoc = getDocumentCompareKey(linkUrl.toString(), location.href) === getDocumentCompareKey(location.href, location.href);
+        if (sameOrigin && sameDoc === false && nonMediaLink) {
           relatedArticleSquare = true;
           score += 4;
           if (/(related|recommend|ranking|pickup|popular|list)/.test(cls)) score += 1;
@@ -1288,6 +1305,40 @@ function scoreThumbnailLike(el, meta, absUrl) {
   if (/(thumb|thumbnail|small|\/s\/|_thumb|\/resize\/\d+x\d+|[?&](w|h|width|height)=\d+)/.test(u)) score += 1;
 
   return score;
+}
+
+function pickAutoHiddenReason(a, b) {
+  const ra = String(a || '');
+  const rb = String(b || '');
+  if (ra === 'pageLinkThumb' || rb === 'pageLinkThumb') return 'pageLinkThumb';
+  return rb || ra || '';
+}
+
+function getAutoHiddenReason(el, meta, absUrl, thumbScore) {
+  if (!el || el.nodeType !== 1) return '';
+  const tag = el.tagName ? el.tagName.toUpperCase() : '';
+  let anchor = null;
+  if (tag === 'A') anchor = el;
+  else if (el.closest) anchor = el.closest('a[href]');
+  const hasImgContext = tag === 'IMG' || !!(anchor && anchor.querySelector && anchor.querySelector('img'));
+  if (!hasImgContext) return '';
+
+  const score = Number.isFinite(thumbScore) ? thumbScore : scoreThumbnailLike(el, meta, absUrl);
+  let sameSitePageLink = false;
+  if (anchor) {
+    const href = (anchor.getAttribute('href') || '').trim();
+    if (href && !isImageUrl(href) && !isVideoUrl(href)) {
+      try {
+        const linkUrl = new URL(href, location.href);
+        sameSitePageLink = linkUrl.origin === location.origin &&
+          getDocumentCompareKey(linkUrl.toString(), location.href) !== getDocumentCompareKey(location.href, location.href);
+      } catch (e) {}
+    }
+  }
+
+  if (sameSitePageLink && score >= (state.cfg.thumbLikeMinScore || 0)) return 'pageLinkThumb';
+  if (score >= (state.cfg.thumbLikeMinScore || 0)) return 'thumbScore';
+  return '';
 }
 
 function collectImageUrls(img) {
@@ -1663,8 +1714,11 @@ function makeItem(kind, url, meta, baseUrl) {
     pageLabel: computePageLabel(pageUrl),
     index: state.items.list.length,
     card: null,
+    __sourceEl: meta.el || null,
     __origHidden: !!meta.origHidden,
     __allHidden: !!meta.origHidden,
+    __autoHidden: false,
+    __autoHiddenReason: '',
     __noiseReason: '',
     __dupClusterUrls: []
   };
@@ -1672,11 +1726,10 @@ function makeItem(kind, url, meta, baseUrl) {
   item.__thumbScore = 0;
   if (kind === 'img') {
     const thumbScore = scoreThumbnailLike(meta.el || null, meta, meta.openUrl || norm.canon);
+    const autoHiddenReason = getAutoHiddenReason(meta.el || null, meta, meta.openUrl || norm.canon, thumbScore);
     item.__thumbScore = thumbScore;
-    if (thumbScore >= (state.cfg.thumbLikeMinScore || 0)) {
-      item.__isNoise = true;
-      item.__noiseReason = 'thumbScore';
-    }
+    item.__autoHidden = !!autoHiddenReason;
+    item.__autoHiddenReason = autoHiddenReason;
   }
   if (item.url) item.__dupClusterUrls.push(item.url);
   item.dupCount = 1;
@@ -1772,6 +1825,8 @@ function mergeBest(target, candidate) {
   const keepThumbToken = target.__thumbToken;
   const keepIsNoise = target.__isNoise;
   const keepNoiseReason = target.__noiseReason;
+  const keepAutoHidden = !!target.__autoHidden;
+  const keepAutoHiddenReason = target.__autoHiddenReason || '';
   const keepHashDup = target.__hashDup;
   const keepFailed = target.__failed;
   const keepRenderUrl = target.__renderUrl;
@@ -1792,6 +1847,8 @@ function mergeBest(target, candidate) {
   target.__dupClusterUrls = keepDupClusterUrls;
   target.__allHidden = keepAllHidden && !!candidate.__allHidden;
   target.__origHidden = target.__allHidden;
+  target.__autoHidden = keepAutoHidden && !!candidate.__autoHidden;
+  target.__autoHiddenReason = target.__autoHidden ? pickAutoHiddenReason(keepAutoHiddenReason, candidate.__autoHiddenReason || '') : '';
   if (keepUrl === target.url) {
     target.__isNoise = keepIsNoise;
     target.__noiseReason = keepNoiseReason;
@@ -1813,6 +1870,8 @@ function adoptItem(item) {
     const betterByQuality = isHigherQualityImageCandidate(item, existing);
     if (betterByScore || betterByQuality) {
       const prevAllHidden = !!existing.__allHidden;
+      const prevAutoHidden = !!existing.__autoHidden;
+      const prevAutoHiddenReason = existing.__autoHiddenReason || '';
       const prevDup = existing.dupCount || 1;
       mergeBest(existing, item);
       existing.dupCount = prevDup + 1;
@@ -1820,13 +1879,19 @@ function adoptItem(item) {
         updateCard(existing);
         updateDupBadge(existing);
       }
-      if (prevAllHidden !== !!existing.__allHidden) {
-        scheduleApplyFilterSort('origHidden');
+      if (
+        prevAllHidden !== !!existing.__allHidden ||
+        prevAutoHidden !== !!existing.__autoHidden ||
+        prevAutoHiddenReason !== (existing.__autoHiddenReason || '')
+      ) {
+        scheduleApplyFilterSort(prevAllHidden !== !!existing.__allHidden ? 'origHidden' : 'autoHidden');
       }
       registerSeen(key);
       return existing;
     }
     const prevAllHidden = !!existing.__allHidden;
+    const prevAutoHidden = !!existing.__autoHidden;
+    const prevAutoHiddenReason = existing.__autoHiddenReason || '';
     let embedTypeChanged = false;
     if (!existing.embedType && item.embedType) {
       existing.embedType = item.embedType;
@@ -1835,12 +1900,18 @@ function adoptItem(item) {
     existing.dupCount = (existing.dupCount || 1) + 1;
     existing.__allHidden = prevAllHidden && !!item.__allHidden;
     existing.__origHidden = existing.__allHidden;
+    existing.__autoHidden = prevAutoHidden && !!item.__autoHidden;
+    existing.__autoHiddenReason = existing.__autoHidden ? pickAutoHiddenReason(prevAutoHiddenReason, item.__autoHiddenReason || '') : '';
     mergeDupCluster(existing, item);
     if (existing.card) updateDupBadge(existing);
     if (embedTypeChanged && existing.card) updateCard(existing);
-    if (prevAllHidden !== !!existing.__allHidden) {
+    if (
+      prevAllHidden !== !!existing.__allHidden ||
+      prevAutoHidden !== !!existing.__autoHidden ||
+      prevAutoHiddenReason !== (existing.__autoHiddenReason || '')
+    ) {
       if (existing.card) updateCard(existing);
-      scheduleApplyFilterSort('origHidden');
+      scheduleApplyFilterSort(prevAllHidden !== !!existing.__allHidden ? 'origHidden' : 'autoHidden');
     }
     registerSeen(key);
     return null;
@@ -2435,7 +2506,7 @@ function createShell() {
       display: none;
       pointer-events: none;
     }
-    .card[data-oh="1"] .hlabel { display: block; }
+    .card[data-oh="1"] .hlabel, .card[data-ah="1"] .hlabel { display: block; }
     .dup-badge { position: absolute; top: 6px; right: 6px; background: #111; color: #eee; font-size: 10px; padding: 2px 6px; border-radius: 999px; border: 1px solid #555; display: none; z-index: 2; cursor: pointer; max-width: 72%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .meta { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; font-size: 11px; color: #bbb; }
     .open { text-decoration: none; font-size: 14px; padding: 4px 6px; border-radius: 6px; border: 1px solid #555; color: #eee; }
@@ -3030,6 +3101,20 @@ function applyThumbMetrics(item, img, card) {
         item.width = w;
         item.height = h;
       }
+      const prevAutoHidden = !!item.__autoHidden;
+      const prevAutoHiddenReason = item.__autoHiddenReason || '';
+      if (item.kind === 'img' && item.__sourceEl) {
+        const thumbMeta = { width: w, height: h };
+        item.__thumbScore = scoreThumbnailLike(item.__sourceEl, thumbMeta, item.openUrl || item.url);
+        const autoHiddenReason = getAutoHiddenReason(item.__sourceEl, thumbMeta, item.openUrl || item.url, item.__thumbScore);
+        if ((item.dupCount || 1) <= 1) {
+          item.__autoHidden = !!autoHiddenReason;
+          item.__autoHiddenReason = autoHiddenReason;
+        } else if (item.__autoHidden) {
+          item.__autoHidden = !!autoHiddenReason;
+          item.__autoHiddenReason = item.__autoHidden ? pickAutoHiddenReason(prevAutoHiddenReason, autoHiddenReason) : '';
+        }
+      }
       item.score = scoreItem(item);
       const area = w * h;
       const aspect = Math.max(w / h, h / w);
@@ -3054,6 +3139,13 @@ function applyThumbMetrics(item, img, card) {
       if (card) {
         const dim = card.querySelector('.meta div');
         if (dim) dim.textContent = formatItemMetaText(item);
+      }
+      if (
+        prevAutoHidden !== !!item.__autoHidden ||
+        prevAutoHiddenReason !== (item.__autoHiddenReason || '')
+      ) {
+        if (card) updateCard(item);
+        scheduleApplyFilterSort('autoHidden');
       }
       if (isNoise && state.cfg.noiseHide && card) {
         card.classList.add('is-hidden');
@@ -3212,8 +3304,7 @@ function getThumbMaxConcurrent() {
 
 function getThumbMaxConcurrentWhileScroll() {
   if (state.env && state.env.isIPhone) {
-    if (state.env.isHighHz === true) return 2;
-    return 1;
+    return 2;
   }
   if (state.env && state.env.isIPad) return 2;
   return 3;
@@ -3239,6 +3330,14 @@ function getAdaptiveThumbRootMarginPx() {
     return base;
   }
   return base;
+}
+
+function getThumbIoRootMarginPx() {
+  const base = state.cfg.thumbIoRootMarginPx || 0;
+  const adaptive = getAdaptiveThumbRootMarginPx();
+  if (!base) return 0;
+  if (!adaptive) return base;
+  return Math.min(base, adaptive);
 }
 
 function initThumbLoader() {
@@ -3314,6 +3413,8 @@ function initThumbLoader() {
 
   if (typeof IntersectionObserver === 'function') {
     try {
+      const ioMargin = getThumbIoRootMarginPx();
+      const ioRootMargin = ioMargin ? (ioMargin + 'px 0px ' + ioMargin + 'px 0px') : '0px 0px';
       state.thumb.observer = new IntersectionObserver(function(entries) {
         entries.forEach(function(entry) {
           if (!entry) return;
@@ -3332,8 +3433,8 @@ function initThumbLoader() {
         });
       }, {
         root: root,
-        rootMargin: '0px 0px',
-        threshold: 0.01
+        rootMargin: ioRootMargin,
+        threshold: 0
       });
       Array.from(root.querySelectorAll('.card')).forEach(function(card) {
         try { state.thumb.observer.observe(card); } catch (e) {}
@@ -3878,6 +3979,7 @@ function createCard(item) {
   card.dataset.id = item.id;
   card.dataset.kind = item.kind || '';
   card.dataset.oh = item.__allHidden ? '1' : '0';
+  card.dataset.ah = item.__autoHidden ? '1' : '0';
   if (item.embedType) {
     card.dataset.etype = ((item.embedType || '').toUpperCase()) || 'OTHER';
   }
@@ -4121,6 +4223,7 @@ function updateCard(item) {
   if (!item.card) return;
   item.card.dataset.kind = item.kind || '';
   item.card.dataset.oh = item.__allHidden ? '1' : '0';
+  item.card.dataset.ah = item.__autoHidden ? '1' : '0';
   if (item.embedType) {
     item.card.dataset.etype = ((item.embedType || '').toUpperCase()) || 'OTHER';
   } else {
@@ -5205,17 +5308,25 @@ function getNoiseReasonCode(it) {
   const sw = state.cfg.thumbSmallMaxW || 0;
   const sh = state.cfg.thumbSmallMaxH || 0;
   if (sw > 0 && sh > 0 && it.width && it.height && it.width <= sw && it.height <= sh) return 'smallPx';
-  if ((it.__thumbScore || 0) >= (state.cfg.thumbLikeMinScore || 0)) return 'thumbScore';
   return 'noise';
+}
+
+function getAutoHiddenReasonCode(it) {
+  if (!it || !it.__autoHidden) return '';
+  const reason = it.__autoHiddenReason || '';
+  if (reason) return reason;
+  if ((it.__thumbScore || 0) >= (state.cfg.thumbLikeMinScore || 0)) return 'thumbScore';
+  return 'autoHidden';
 }
 
 function getHideReasonCode(it) {
   if (!it) return '';
   if (!passesFilter(it)) return 'filter';
-  if (state.cfg.noiseHide && it.__isNoise) return 'noise:' + getNoiseReasonCode(it);
   if (it.__hashDup) return 'dup';
   if (it.__failed) return 'failed';
   if (state.cfg.hiddenHide && it.__allHidden) return 'origHidden';
+  if (state.cfg.hiddenHide && it.__autoHidden) return 'auto:' + getAutoHiddenReasonCode(it);
+  if (state.cfg.noiseHide && it.__isNoise) return 'noise:' + getNoiseReasonCode(it);
   if (it.card && it.card.classList.contains('is-hidden')) return 'cardHidden';
   return '';
 }
@@ -5227,9 +5338,14 @@ function getHideReasonLabel(code) {
   if (code === 'failed') return '失敗';
   if (code === 'origHidden') return '元非表示';
   if (code === 'cardHidden') return 'UI非表示';
+  if (code.indexOf('auto:') === 0) {
+    const sub = code.slice(5);
+    if (sub === 'pageLinkThumb') return '自動非表示(別ページリンク)';
+    if (sub === 'thumbScore') return '自動非表示(サムネ)';
+    return '自動非表示';
+  }
   if (code.indexOf('noise:') === 0) {
     const sub = code.slice(6);
-    if (sub === 'thumbScore') return 'ノイズ(スコア)';
     if (sub === 'smallPx') return 'ノイズ(<=100px)';
     if (sub === 'smallDim') return 'ノイズ(小寸法)';
     if (sub === 'smallArea') return 'ノイズ(小面積)';
@@ -5246,9 +5362,14 @@ function getHideReasonShort(code) {
   if (code === 'failed') return '失敗';
   if (code === 'origHidden') return '元非表示';
   if (code === 'cardHidden') return 'UI';
+  if (code.indexOf('auto:') === 0) {
+    const sub = code.slice(5);
+    if (sub === 'pageLinkThumb') return '別ページ';
+    if (sub === 'thumbScore') return 'サムネ';
+    return '自動';
+  }
   if (code.indexOf('noise:') === 0) {
     const sub = code.slice(6);
-    if (sub === 'thumbScore') return 'score';
     if (sub === 'smallPx') return '<=100';
     if (sub === 'smallDim') return '小寸法';
     if (sub === 'smallArea') return '小面積';
@@ -5267,7 +5388,9 @@ function formatItemMetaText(item) {
   if (item && Number.isFinite(item.score)) {
     parts.push('S' + Number(item.score).toFixed(1));
   }
-  if (item && item.__isNoise) {
+  if (item && item.__autoHidden) {
+    parts.push('H:' + getHideReasonShort('auto:' + getAutoHiddenReasonCode(item)));
+  } else if (item && item.__isNoise) {
     parts.push('H:' + getHideReasonShort('noise:' + getNoiseReasonCode(item)));
   }
   return parts.length ? (base + ' [' + parts.join(' ') + ']') : base;
@@ -5342,6 +5465,7 @@ function getHiddenItemsWithReason(limit) {
     const extras = [];
     if (it && typeof it.__thumbScore === 'number' && it.__thumbScore > 0) extras.push('TS=' + Math.round(it.__thumbScore));
     if (it && it.dupCount >= 2) extras.push('dup=' + it.dupCount);
+    if (it && it.__autoHiddenReason) extras.push('ahr=' + it.__autoHiddenReason);
     if (it && it.__noiseReason) extras.push('nr=' + it.__noiseReason);
     return (i + 1) + '. [' + getHideReasonLabel(reason) + '|' + reason + '] ' + getItemLogUrl(it) + (extras.length ? (' | ' + extras.join(' ')) : '');
   });
