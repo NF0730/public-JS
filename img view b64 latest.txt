@@ -262,7 +262,7 @@ javascript:(function(){
  */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101.5';
+const SCRIPT_REV = '1.101.6';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -4054,9 +4054,29 @@ function createCard(item) {
   } else if (item.kind === 'embed') {
     const ph = document.createElement('div');
     ph.className = 'ph';
-    ph.textContent = 'TAP FOR LB ' + item.embedType;
     ph.style.height = th + 'px';
     ph.style.width = '100%';
+    ph.title = 'TAP FOR LB ' + item.embedType;
+    const previewLines = getEmbedPreviewLines(item);
+    if (previewLines && previewLines.length) {
+      ph.style.flexDirection = 'column';
+      ph.style.gap = '4px';
+      ph.style.padding = '10px 8px';
+      ph.style.textAlign = 'center';
+      previewLines.forEach(function(line, idx) {
+        const row = document.createElement('div');
+        row.textContent = line;
+        row.style.maxWidth = '100%';
+        row.style.overflowWrap = 'anywhere';
+        row.style.lineHeight = '1.3';
+        row.style.color = idx === 0 ? '#d0d0d0' : '#9a9a9a';
+        row.style.fontSize = idx === 0 ? '12px' : '10px';
+        row.style.fontWeight = idx === 0 ? '700' : '500';
+        ph.appendChild(row);
+      });
+    } else {
+      ph.textContent = 'TAP FOR LB ' + item.embedType;
+    }
     thumb.appendChild(ph);
     const badge = document.createElement('div');
     badge.className = 'badge';
@@ -5137,15 +5157,160 @@ function getYoutubeIdFromItem(item) {
   return '';
 }
 
+function compactPreviewValue(raw, head, tail) {
+  const s = String(raw || '').trim();
+  const keepHead = Math.max(0, head || 0);
+  const keepTail = Math.max(0, tail || 0);
+  if (!s) return '';
+  if (s.length <= keepHead + keepTail + 1) return s;
+  return s.slice(0, keepHead) + '…' + s.slice(-keepTail);
+}
+
+function findEmbedInfoFromItem(item, extractor) {
+  if (!item || typeof extractor !== 'function') return null;
+  const candidates = [item.openUrl, item.url, item.rawUrl, item.abs, item.embedUrl];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const info = extractor(candidates[i] || '');
+    if (info) return info;
+  }
+  return null;
+}
+
+function extractXStatusInfo(raw) {
+  if (!raw) return null;
+  let u;
+  try { u = new URL(raw, location.href); } catch (e) { return null; }
+  const host = (u.hostname || '').toLowerCase();
+  if (
+    host !== 'x.com' && !host.endsWith('.x.com') &&
+    host !== 'twitter.com' && !host.endsWith('.twitter.com') &&
+    host !== 'mobile.twitter.com' && !host.endsWith('.mobile.twitter.com')
+  ) return null;
+  const path = u.pathname || '';
+  let m = /^\/([^/?#]+)\/status\/(\d+)(?:[/?#]|$)/i.exec(path);
+  if (m) return { user: (m[1] || '').replace(/^@/, ''), id: m[2] || '' };
+  m = /^\/i\/(?:web\/)?status\/(\d+)(?:[/?#]|$)/i.exec(path);
+  if (m) return { user: '', id: m[1] || '' };
+  return null;
+}
+
+function getXStatusInfoFromItem(item) {
+  return findEmbedInfoFromItem(item, extractXStatusInfo);
+}
+
+function extractTikTokVideoInfo(raw) {
+  if (!raw) return null;
+  let u;
+  try { u = new URL(raw, location.href); } catch (e) { return null; }
+  const host = (u.hostname || '').toLowerCase();
+  if (host !== 'tiktok.com' && host !== 'www.tiktok.com' && !host.endsWith('.tiktok.com')) return null;
+  const path = u.pathname || '';
+  let m = /^\/@([^/?#]+)\/video\/(\d+)(?:[/?#]|$)/i.exec(path);
+  if (m) return { user: (m[1] || '').replace(/^@/, ''), id: m[2] || '' };
+  m = /^\/(?:embed\/v2|player\/v1)\/(\d+)(?:[/?#]|$)/i.exec(path);
+  if (m) return {
+    user: String(u.searchParams.get('username') || '').replace(/^@/, ''),
+    id: m[1] || ''
+  };
+  return null;
+}
+
+function getTikTokVideoInfoFromItem(item) {
+  return findEmbedInfoFromItem(item, extractTikTokVideoInfo);
+}
+
+function extractImgurInfo(raw) {
+  if (!raw) return null;
+  let u;
+  try { u = new URL(raw, location.href); } catch (e) { return null; }
+  const host = (u.hostname || '').toLowerCase();
+  const path = u.pathname || '';
+  if (host === 'i.imgur.com' || host.endsWith('.i.imgur.com')) {
+    const direct = /^\/([^/?#]+?)(?:\.(?:jpe?g|png|gif|webp|avif|bmp|gifv|mp4))?(?:[/?#]|$)/i.exec(path);
+    if (direct && /^[a-z0-9]+$/i.test(direct[1] || '')) {
+      return { kind: 'image', id: direct[1] || '' };
+    }
+    return null;
+  }
+  if (host !== 'imgur.com' && host !== 'www.imgur.com' && !host.endsWith('.imgur.com')) return null;
+  const album = /^\/a\/([^/?#]+)(?:[/?#]|$)/i.exec(path);
+  if (album) return { kind: 'album', id: album[1] || '' };
+  const gallery = /^\/gallery\/([^/?#]+)(?:[/?#]|$)/i.exec(path);
+  if (gallery) return { kind: 'gallery', id: gallery[1] || '' };
+  const single = /^\/([^/?#]+?)(?:\.(?:jpe?g|png|gif|webp|avif|bmp|gifv|mp4))?(?:[/?#]|$)/i.exec(path);
+  if (!single || !single[1]) return null;
+  const seg = single[1];
+  if (!/^[a-z0-9]+$/i.test(seg)) return null;
+  if (/^(?:a|gallery|t|topic|r|user|account|signin|register|remix|download)$/i.test(seg)) return null;
+  return { kind: 'image', id: seg };
+}
+
+function getImgurInfoFromItem(item) {
+  return findEmbedInfoFromItem(item, extractImgurInfo);
+}
+
+function getYoutubeThumbUrl(item) {
+  const id = getYoutubeIdFromItem(item);
+  if (id) return 'https://i.ytimg.com/vi/' + id + '/hqdefault.jpg';
+  return '';
+}
+
+function getImgurThumbUrl(item) {
+  const info = getImgurInfoFromItem(item);
+  if (!info || info.kind !== 'image' || !info.id) return '';
+  return 'https://i.imgur.com/' + info.id + 'l.jpg';
+}
+
+function getEmbedPreviewLines(item) {
+  if (!item || item.kind !== 'embed') return [];
+  const t = (item.embedType || '').toUpperCase();
+  if (t === 'X') {
+    const info = getXStatusInfoFromItem(item);
+    if (info && info.id) {
+      const userLabel = info.user ? ('X @' + info.user) : 'X status';
+      return [userLabel, 'status ' + compactPreviewValue(info.id, 8, 4)];
+    }
+    return ['X'];
+  }
+  if (t === 'TT') {
+    const info = getTikTokVideoInfoFromItem(item);
+    if (info && info.id) {
+      const userLabel = info.user ? ('TT @' + info.user) : 'TT video';
+      return [userLabel, 'video ' + compactPreviewValue(info.id, 8, 4)];
+    }
+    return ['TT'];
+  }
+  if (t === 'IMGUR') {
+    const info = getImgurInfoFromItem(item);
+    if (info && info.id) {
+      return ['IMGUR ' + info.kind, compactPreviewValue(info.id, 8, 4)];
+    }
+    return ['IMGUR'];
+  }
+  if (t === 'YT') {
+    const id = getYoutubeIdFromItem(item);
+    if (id) return ['YT video', id];
+    return ['YT'];
+  }
+  return [];
+}
+
+function getEmbedMetaLabel(item) {
+  const lines = getEmbedPreviewLines(item);
+  if (!lines || !lines.length) return '';
+  return lines.join(' / ');
+}
+
 function getEmbedThumbUrl(item) {
   if (!item || item.kind !== 'embed') return '';
   const t = (item.embedType || '').toUpperCase();
   if (t === 'YT') {
-    const id = getYoutubeIdFromItem(item);
-    if (id) return 'https://i.ytimg.com/vi/' + id + '/hqdefault.jpg';
-    return '';
+    return getYoutubeThumbUrl(item);
   }
-  if (t === 'X' || t === 'TT' || t === 'INSTA' || t === 'IMGUR') {
+  if (t === 'IMGUR') {
+    return getImgurThumbUrl(item);
+  }
+  if (t === 'X' || t === 'TT' || t === 'INSTA') {
     return '';
   }
   return '';
@@ -5380,7 +5545,11 @@ function getHideReasonShort(code) {
 }
 
 function formatItemMetaText(item) {
-  const base = (item && item.width && item.height) ? (item.width + '×' + item.height) : ((item && item.kind) ? item.kind.toUpperCase() : '');
+  let base = (item && item.width && item.height) ? (item.width + '×' + item.height) : ((item && item.kind) ? item.kind.toUpperCase() : '');
+  if (item && item.kind === 'embed') {
+    const embedLabel = getEmbedMetaLabel(item);
+    if (embedLabel) base = embedLabel;
+  }
   const parts = [];
   if (item && typeof item.__thumbScore === 'number' && item.__thumbScore > 0) {
     parts.push('TS' + Math.round(item.__thumbScore));
