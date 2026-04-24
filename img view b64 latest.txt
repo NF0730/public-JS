@@ -260,9 +260,30 @@ javascript:(function(){
  - start IO thumb enqueue at threshold 0 with a small IO rootMargin based on fallback prefetch logic
  - raise iPhone scroll-time thumb concurrency from 1 to 2
  */
+/* rev1.101.8:
+ - guard Lightbox async callbacks with a shared token and abort stale image loads on switch/close
+ */
+/* rev1.101.9:
+ - coalesce updateInfo visibility scans so thumbnail bursts do not run full-list stats per image
+ */
+/* rev1.101.10:
+ - cache original-hidden ancestor checks per extraction and skip computed style for parsed crawl documents
+ */
+/* rev1.101.11:
+ - make MutationObserver rescans target changed subtrees, with full-DOM fallback for bursts
+ */
+/* rev1.101.12:
+ - release debug globals on UI cleanup so state/items/source DOM references do not linger
+ */
+/* rev1.101.13:
+ - limit crawl HTML reads with streaming cutoff and Content-Length fallback guard
+ */
+/* rev1.101.14:
+ - make sameSite conservative: same-origin or explicit exact host allowlist only
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101.6';
+const SCRIPT_REV = '1.101.14';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -355,7 +376,10 @@ const state = {
     lastRun: 0,
     pending: false,
     dirty: false,
-    lastReason: ''
+    lastReason: '',
+    roots: [],
+    rootSet: null,
+    full: false
   },
   wd: {
     t: 0,
@@ -390,6 +414,55 @@ const state = {
 
 /* [00] bootstrap/guard/cleanup */
 const ROOT_ID = '__fmp_root__';
+const DEBUG_GLOBAL_KEYS = [
+  '__FMP_ABORT__',
+  '__FMP_ABORT_CONTROLLERS__',
+  '__FMP_ITEMS__',
+  '__FMP_SEEN__',
+  '__FMP_SEEN_ORDER__',
+  '__FMP_GROUP_BEST__',
+  '__FMP_FILTER__',
+  '__FMP_STOP_CRAWL__',
+  '__FMP_SET_FILTER__',
+  '__FMP_APPLY_FILTER_SORT__',
+  '__FMP_APPLY_ERROR_VIS__',
+  '__FMP_LB_OPEN__'
+];
+
+function clearDebugGlobals() {
+  DEBUG_GLOBAL_KEYS.forEach(function(key) {
+    try { window[key] = null; } catch (e) {}
+    try { delete window[key]; } catch (e) {}
+  });
+}
+
+function publishDebugGlobals() {
+  window.__FMP_ABORT__ = state.abort;
+  window.__FMP_ABORT_CONTROLLERS__ = state.abort.controllers;
+  window.__FMP_ITEMS__ = state.items.list;
+  window.__FMP_SEEN__ = state.seen.map;
+  window.__FMP_SEEN_ORDER__ = state.seen.order;
+  window.__FMP_GROUP_BEST__ = state.groupBest;
+  window.__FMP_FILTER__ = state.filter;
+  window.__FMP_STOP_CRAWL__ = abortAll;
+  window.__FMP_SET_FILTER__ = setFilter;
+  window.__FMP_APPLY_FILTER_SORT__ = applyFilterSort;
+  window.__FMP_APPLY_ERROR_VIS__ = applyErrorVis;
+  window.__FMP_LB_OPEN__ = function(idOrIndex) {
+    if (typeof idOrIndex === 'number') {
+      buildLightboxList();
+      if (idOrIndex >= 0 && idOrIndex < state.lb.list.length) {
+        state.lb.index = idOrIndex;
+        renderLightboxItem();
+        state.lb.overlay.classList.add('open');
+        state.lb.open = true;
+        if (state.thumb) state.thumb.paused = true;
+      }
+    } else if (typeof idOrIndex === 'string') {
+      openLightboxById(idOrIndex);
+    }
+  };
+}
 
 function disconnectThumbObserver() {
   if (!state.thumb) return;
@@ -474,6 +547,7 @@ function cleanupUi() {
     state.ui.root.parentNode.removeChild(state.ui.root);
   }
   state.ui.root = null;
+  clearDebugGlobals();
 }
 
 function guardAndCleanup() {
@@ -609,6 +683,7 @@ function initCfg() {
     maxScriptCount: 30,
     maxScriptChars: 200000,
     maxHtmlChars: 300000,
+    crawlMaxHtmlBytes: 900000,
     renderChunk: 24,
     thumbConcurrentIphone: 3,
     thumbConcurrentIpad: 4,
@@ -644,6 +719,7 @@ function initCfg() {
     crawlMaxQueue: 200,
     crawlMaxNewLinksPerDoc: 24,
     crawlPreferSameOriginOnly: true,
+    sameSiteAllowHosts: [],
     crawlArticleMaxPages: 30,
     progressStaleMs: 1500,
     embedHeight: 360,
@@ -1183,25 +1259,53 @@ function hasInlineHiddenStyle(styleText) {
   return false;
 }
 
-function isOriginallyHidden(el) {
+function setHiddenCache(cache, nodes, value) {
+  if (!cache || !nodes) return;
+  nodes.forEach(function(node) {
+    if (node && node.nodeType === 1) {
+      try { cache.set(node, value); } catch (e) {}
+    }
+  });
+}
+
+function isOriginallyHidden(el, hiddenCache) {
   if (!el || el.nodeType !== 1) return false;
-  const useComputed = !!el.isConnected;
+  if (hiddenCache && hiddenCache.has(el)) return !!hiddenCache.get(el);
+  const useComputed = !!el.isConnected && el.ownerDocument === document;
   let cur = el;
   let depth = 0;
+  const walked = [];
   while (cur && cur.nodeType === 1 && depth < 18) {
-    if (cur.hasAttribute && cur.hasAttribute('hidden')) return true;
+    if (hiddenCache && hiddenCache.has(cur)) {
+      const cached = !!hiddenCache.get(cur);
+      setHiddenCache(hiddenCache, walked, cached);
+      return cached;
+    }
+    walked.push(cur);
+    if (cur.hasAttribute && cur.hasAttribute('hidden')) {
+      setHiddenCache(hiddenCache, walked, true);
+      return true;
+    }
     if (cur.getAttribute) {
       const aria = (cur.getAttribute('aria-hidden') || '').toLowerCase();
-      if (aria === 'true') return true;
-      if (hasInlineHiddenStyle(cur.getAttribute('style'))) return true;
+      if (aria === 'true') {
+        setHiddenCache(hiddenCache, walked, true);
+        return true;
+      }
+      if (hasInlineHiddenStyle(cur.getAttribute('style'))) {
+        setHiddenCache(hiddenCache, walked, true);
+        return true;
+      }
     }
     if (cur.tagName && cur.tagName.toUpperCase() === 'DETAILS' && !(cur.hasAttribute && cur.hasAttribute('open'))) {
+      setHiddenCache(hiddenCache, walked, true);
       return true;
     }
     if (useComputed) {
       try {
         const style = getComputedStyle(cur);
         if (style && (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse')) {
+          setHiddenCache(hiddenCache, walked, true);
           return true;
         }
       } catch (e) {}
@@ -1209,6 +1313,7 @@ function isOriginallyHidden(el) {
     cur = cur.parentElement;
     depth += 1;
   }
+  setHiddenCache(hiddenCache, walked, false);
   return false;
 }
 
@@ -1371,10 +1476,106 @@ function findFirstHttpUrlInText(text) {
   return m ? m[0] : '';
 }
 
+function normalizePreviewText(raw) {
+  return String(raw || '').replace(/\s+/g, ' ').trim();
+}
+
+function compactPreviewText(raw, maxLen) {
+  const s = normalizePreviewText(raw);
+  const limit = Math.max(0, maxLen || 0);
+  if (!s) return '';
+  if (!limit || s.length <= limit) return s;
+  return s.slice(0, Math.max(1, limit - 1)).trimEnd() + '…';
+}
+
+function sanitizeEmbedPreviewText(raw, skipUrls) {
+  let s = normalizePreviewText(raw);
+  if (!s) return '';
+  const skips = Array.isArray(skipUrls) ? skipUrls : [];
+  skips.forEach(function(u) {
+    const exact = normalizePreviewText(u);
+    if (!exact || !s) return;
+    if (s === exact) {
+      s = '';
+      return;
+    }
+    s = s.split(exact).join(' ');
+  });
+  s = s.replace(/\bhttps?:\/\/[^\s"'<>]+/ig, ' ');
+  s = normalizePreviewText(s);
+  if (!s) return '';
+  if (/^(?:https?:\/\/|www\.)/i.test(s)) return '';
+  return compactPreviewText(s, 72);
+}
+
+function pushEmbedPreviewCandidate(list, raw, skipUrls) {
+  const s = sanitizeEmbedPreviewText(raw, skipUrls);
+  if (!s) return;
+  if (list.indexOf(s) >= 0) return;
+  list.push(s);
+}
+
+function getEmbedPreviewTextFromElement(el, skipUrls) {
+  if (!el) return '';
+  const out = [];
+  if (el.getAttribute) {
+    pushEmbedPreviewCandidate(out, el.getAttribute('aria-label'), skipUrls);
+    pushEmbedPreviewCandidate(out, el.getAttribute('title'), skipUrls);
+  }
+  if ((el.tagName || '').toUpperCase() === 'A') {
+    pushEmbedPreviewCandidate(out, el.textContent || '', skipUrls);
+  }
+  if (el.querySelector) {
+    const media = el.querySelector('img[alt], img[title]');
+    if (media && media.getAttribute) {
+      pushEmbedPreviewCandidate(out, media.getAttribute('alt'), skipUrls);
+      pushEmbedPreviewCandidate(out, media.getAttribute('title'), skipUrls);
+    }
+  }
+  const fig = el.closest ? el.closest('figure') : null;
+  if (fig) {
+    if (fig.getAttribute) {
+      pushEmbedPreviewCandidate(out, fig.getAttribute('aria-label'), skipUrls);
+      pushEmbedPreviewCandidate(out, fig.getAttribute('title'), skipUrls);
+    }
+    const cap = fig.querySelector ? fig.querySelector('figcaption') : null;
+    if (cap) pushEmbedPreviewCandidate(out, cap.textContent || '', skipUrls);
+  }
+  const parent = el.parentElement;
+  if (parent && parent.children) {
+    Array.from(parent.children).forEach(function(child) {
+      if (!child || child === el) return;
+      const tag = (child.tagName || '').toUpperCase();
+      const cls = String(child.className || '');
+      if (tag === 'FIGCAPTION' || /(caption|title|summary|desc|description)/i.test(cls)) {
+        pushEmbedPreviewCandidate(out, child.textContent || '', skipUrls);
+      }
+    });
+  }
+  return out[0] || '';
+}
+
+function queryAllIncludingRoot(root, selector) {
+  const out = [];
+  if (!root || !selector) return out;
+  try {
+    if (root.matches && root.matches(selector)) out.push(root);
+  } catch (e) {}
+  try {
+    if (root.querySelectorAll) {
+      Array.from(root.querySelectorAll(selector)).forEach(function(el) {
+        out.push(el);
+      });
+    }
+  } catch (e) {}
+  return out;
+}
+
 function extractFromDocument(doc, source, baseUrl) {
   const items = [];
   const strictBody = !!state.cfg.strictBodyOnly;
-  const imgs = Array.from(doc.querySelectorAll('img'));
+  const hiddenCache = typeof WeakMap === 'function' ? new WeakMap() : null;
+  const imgs = queryAllIncludingRoot(doc, 'img');
   imgs.forEach(function(img) {
     if (strictBody && !inBodyScope(img)) return;
     if (inAvoidScope(img)) return;
@@ -1382,7 +1583,7 @@ function extractFromDocument(doc, source, baseUrl) {
     if (!urls.length) return;
     const size = getImgSize(img);
     const scope = inBodyScope(img) ? 'body' : '';
-    const origHidden = isOriginallyHidden(img);
+    const origHidden = isOriginallyHidden(img, hiddenCache);
     urls.forEach(function(u) {
       if (!isImgTagCandidateUrl(u)) return;
       items.push(makeItem('img', u, {
@@ -1397,12 +1598,12 @@ function extractFromDocument(doc, source, baseUrl) {
     });
   });
 
-  const videos = Array.from(doc.querySelectorAll('video'));
+  const videos = queryAllIncludingRoot(doc, 'video');
   videos.forEach(function(video) {
     if (strictBody && !inBodyScope(video)) return;
     if (inAvoidScope(video)) return;
     const scope = inBodyScope(video) ? 'body' : '';
-    const origHidden = isOriginallyHidden(video);
+    const origHidden = isOriginallyHidden(video, hiddenCache);
     const vsrcs = [];
     if (video.currentSrc) vsrcs.push(video.currentSrc);
     if (video.src) vsrcs.push(video.src);
@@ -1424,7 +1625,7 @@ function extractFromDocument(doc, source, baseUrl) {
     });
   });
 
-  const links = Array.from(doc.querySelectorAll('a[href]'));
+  const links = queryAllIncludingRoot(doc, 'a[href]');
   links.forEach(function(a) {
     if (strictBody && !inBodyScope(a)) return;
     if (inAvoidScope(a)) return;
@@ -1433,7 +1634,7 @@ function extractFromDocument(doc, source, baseUrl) {
     const abs = normalizeUrl(href, baseUrl || location.href);
     if (!abs) return;
     const scope = inBodyScope(a) ? 'body' : '';
-    const origHidden = isOriginallyHidden(a);
+    const origHidden = isOriginallyHidden(a, hiddenCache);
     const linkImg = a.querySelector ? a.querySelector('img') : null;
     const linkSize = linkImg ? getImgSize(linkImg) : { w: 0, h: 0 };
     const embedFromHref = getEmbedInfo(abs.abs);
@@ -1466,6 +1667,7 @@ function extractFromDocument(doc, source, baseUrl) {
     const mediaHintType = (!embedFromHref && (hrefIsDirectMedia || textIsDirectMedia) && textEmbed && textEmbed.type === 'INSTA') ? 'INSTA' : '';
     const embed = embedFromHref || embedFromText;
     if (embed) {
+      const previewText = getEmbedPreviewTextFromElement(a, [abs.abs, embed.openUrl || '', embed.url || '', textAbs ? textAbs.abs : '']);
       items.push(makeItem('embed', abs.abs, {
         width: 0,
         height: 0,
@@ -1475,6 +1677,7 @@ function extractFromDocument(doc, source, baseUrl) {
         openUrl: embed.openUrl || abs.abs,
         embedType: embed.type,
         embedUrl: embed.url,
+        previewText: previewText,
         el: a
       }, baseUrl));
     }
@@ -1506,7 +1709,7 @@ function extractFromDocument(doc, source, baseUrl) {
     }
   });
 
-  const iframes = Array.from(doc.querySelectorAll('iframe[src]'));
+  const iframes = queryAllIncludingRoot(doc, 'iframe[src]');
   iframes.forEach(function(fr) {
     if (strictBody && !inBodyScope(fr)) return;
     if (inAvoidScope(fr)) return;
@@ -1517,7 +1720,8 @@ function extractFromDocument(doc, source, baseUrl) {
     const info = getEmbedInfoFromIframe(abs.abs);
     if (!info) return;
     const scope = inBodyScope(fr) ? 'body' : '';
-    const origHidden = isOriginallyHidden(fr);
+    const origHidden = isOriginallyHidden(fr, hiddenCache);
+    const previewText = getEmbedPreviewTextFromElement(fr, [abs.abs, info.openUrl || '', info.embedUrl || '']);
     items.push(makeItem('embed', info.openUrl, {
       width: 0,
       height: 0,
@@ -1527,18 +1731,20 @@ function extractFromDocument(doc, source, baseUrl) {
       openUrl: info.openUrl,
       embedType: info.type,
       embedUrl: info.embedUrl,
+      previewText: previewText,
       el: fr
     }, baseUrl));
   });
 
-  const bqs = Array.from(doc.querySelectorAll('blockquote.imgur-embed-pub[data-id], blockquote[data-id][class*=\"imgur-embed\"]'));
+  const bqs = queryAllIncludingRoot(doc, 'blockquote.imgur-embed-pub[data-id], blockquote[data-id][class*=\"imgur-embed\"]');
   bqs.forEach(function(el) {
     if (strictBody && !inBodyScope(el)) return;
     if (inAvoidScope(el)) return;
     const info = getImgurEmbedFromBlockquote(el);
     if (!info) return;
     const scope = inBodyScope(el) ? 'body' : '';
-    const origHidden = isOriginallyHidden(el);
+    const origHidden = isOriginallyHidden(el, hiddenCache);
+    const previewText = getEmbedPreviewTextFromElement(el, [info.openUrl || '', info.embedUrl || '']);
     items.push(makeItem('embed', info.openUrl, {
       width: 0,
       height: 0,
@@ -1548,6 +1754,7 @@ function extractFromDocument(doc, source, baseUrl) {
       openUrl: info.openUrl,
       embedType: 'IMGUR',
       embedUrl: info.embedUrl,
+      previewText: previewText,
       el: el
     }, baseUrl));
   });
@@ -1583,6 +1790,7 @@ function parseCssUrls(value) {
 function extractBackgrounds() {
   const items = [];
   const selector = '[style*="background"], [data-bg], [data-background], [data-bgurl]';
+  const hiddenCache = typeof WeakMap === 'function' ? new WeakMap() : null;
   const nodes = Array.from(document.querySelectorAll(selector)).slice(0, state.cfg.maxBgChecks);
   nodes.forEach(function(node) {
     if (state.cfg.strictBodyOnly && !inBodyScope(node)) return;
@@ -1600,7 +1808,7 @@ function extractBackgrounds() {
       urls.push.apply(urls, parseCssUrls(style.backgroundImage));
     } catch (e) {}
     const scope = inBodyScope(node) ? 'body' : '';
-    const origHidden = isOriginallyHidden(node);
+    const origHidden = isOriginallyHidden(node, hiddenCache);
     uniq(urls).forEach(function(u) {
       if (!isImageUrl(u)) return;
       items.push(makeItem('img', u, {
@@ -1708,6 +1916,7 @@ function makeItem(kind, url, meta, baseUrl) {
     source: meta.source || 'dom',
     openUrl: meta.openUrl || norm.canon,
     poster: meta.poster || '',
+    previewText: meta.previewText || '',
     embedType: meta.embedType || '',
     embedUrl: meta.embedUrl || '',
     pageUrl: pageUrl,
@@ -1818,6 +2027,7 @@ function mergeBest(target, candidate) {
   const keepDup = target.dupCount || 1;
   const keepUrl = target.url;
   const keepEmbedType = target.embedType || '';
+  const keepPreviewText = target.previewText || '';
   const keepThumbLoaded = target.__thumbLoaded;
   const keepThumbLoading = target.__thumbLoading;
   const keepThumbRetry = target.__thumbRetry;
@@ -1838,6 +2048,7 @@ function mergeBest(target, candidate) {
   target.card = keepCard;
   target.dupCount = keepDup;
   if (!target.embedType && keepEmbedType) target.embedType = keepEmbedType;
+  if (!target.previewText && keepPreviewText) target.previewText = keepPreviewText;
   target.__thumbLoaded = keepThumbLoaded;
   target.__thumbLoading = keepThumbLoading;
   target.__thumbRetry = keepThumbRetry;
@@ -1893,9 +2104,14 @@ function adoptItem(item) {
     const prevAutoHidden = !!existing.__autoHidden;
     const prevAutoHiddenReason = existing.__autoHiddenReason || '';
     let embedTypeChanged = false;
+    let previewTextChanged = false;
     if (!existing.embedType && item.embedType) {
       existing.embedType = item.embedType;
       embedTypeChanged = true;
+    }
+    if (!existing.previewText && item.previewText) {
+      existing.previewText = item.previewText;
+      previewTextChanged = true;
     }
     existing.dupCount = (existing.dupCount || 1) + 1;
     existing.__allHidden = prevAllHidden && !!item.__allHidden;
@@ -1904,7 +2120,7 @@ function adoptItem(item) {
     existing.__autoHiddenReason = existing.__autoHidden ? pickAutoHiddenReason(prevAutoHiddenReason, item.__autoHiddenReason || '') : '';
     mergeDupCluster(existing, item);
     if (existing.card) updateDupBadge(existing);
-    if (embedTypeChanged && existing.card) updateCard(existing);
+    if ((embedTypeChanged || previewTextChanged) && existing.card) updateCard(existing);
     if (
       prevAllHidden !== !!existing.__allHidden ||
       prevAutoHidden !== !!existing.__autoHidden ||
@@ -1939,12 +2155,13 @@ function addItems(list) {
 function sameSite(url) {
   try {
     const u = new URL(url, location.href);
+    if (u.origin === location.origin) return true;
     const host = u.hostname.toLowerCase();
-    const cur = location.hostname.toLowerCase();
-    if (host === cur) return true;
-    const a = host.split('.').slice(-2).join('.');
-    const b = cur.split('.').slice(-2).join('.');
-    return a && a === b;
+    const allow = (state.cfg && state.cfg.sameSiteAllowHosts) || [];
+    for (let i = 0; i < allow.length; i += 1) {
+      if (host === String(allow[i] || '').toLowerCase()) return true;
+    }
+    return false;
   } catch (e) {
     return false;
   }
@@ -2211,6 +2428,36 @@ function isHtmlLikeContentType(value) {
   return false;
 }
 
+function canStreamResponse(res) {
+  return !!(res && res.body && typeof res.body.getReader === 'function' && typeof TextDecoder === 'function');
+}
+
+async function readResponseTextLimited(res, maxChars) {
+  const limit = Math.max(1, maxChars || 300000);
+  if (!canStreamResponse(res)) {
+    const text = await res.text();
+    return String(text || '').slice(0, limit);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  try {
+    while (text.length < limit) {
+      const chunk = await reader.read();
+      if (!chunk || chunk.done) break;
+      text += decoder.decode(chunk.value, { stream: true });
+      if (text.length >= limit) {
+        try { reader.cancel(); } catch (e) {}
+        break;
+      }
+    }
+    text += decoder.decode();
+  } catch (e) {
+    try { reader.cancel(); } catch (e2) {}
+  }
+  return text.slice(0, limit);
+}
+
 async function crawlFetch(url) {
   if (state.abort.aborted || state.crawl.stop) return;
   if (state.cfg.crawlPreferSameOriginOnly && !isSameOriginUrl(url)) return;
@@ -2231,8 +2478,15 @@ async function crawlFetch(url) {
       state.log.push('crawl', 'skip non-html ' + url + ' ct=' + (contentType || 'none'));
       return;
     }
-    const text = await res.text();
-    const html = text.slice(0, state.cfg.maxHtmlChars);
+    const contentLengthText = (res.headers && typeof res.headers.get === 'function') ? (res.headers.get('content-length') || '') : '';
+    const contentLength = parseInt(contentLengthText || '0', 10) || 0;
+    const maxBytes = state.cfg.crawlMaxHtmlBytes || 0;
+    const streamable = canStreamResponse(res);
+    if (maxBytes && contentLength > maxBytes && !streamable) {
+      state.log.push('crawl', 'skip huge html ' + url + ' bytes=' + contentLength);
+      return;
+    }
+    const html = await readResponseTextLimited(res, state.cfg.maxHtmlChars);
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const items = extractFromDocument(doc, 'crawl', url);
     if (!items.length) {
@@ -3732,6 +3986,22 @@ function isSameLoadedSrc(currentSrc, targetSrc) {
   return resolveLoadedSrc(currentSrc) === resolveLoadedSrc(targetSrc);
 }
 
+function getThumbCandidateUrls(item, src) {
+  const out = [];
+  const seen = new Set();
+  const add = function(u) {
+    const s = String(u || '').trim();
+    if (!s || seen.has(s)) return;
+    seen.add(s);
+    out.push(s);
+  };
+  add(src);
+  if (item && Array.isArray(item.__thumbCandidates)) {
+    item.__thumbCandidates.forEach(add);
+  }
+  return out;
+}
+
 function startThumbLoad(item) {
   if (!item || !item.card) return;
   const card = item.card;
@@ -3744,6 +4014,7 @@ function startThumbLoad(item) {
   const previewOnly = item.kind !== 'img';
   const src = img.dataset && img.dataset.src ? img.dataset.src : getDisplayUrl(item);
   if (!src) return;
+  const candidateUrls = getThumbCandidateUrls(item, src);
   const token = (item.__thumbToken = (item.__thumbToken || 0) + 1);
   const ctx = { token: token, aborted: false, abort: null };
   item.__thumbCtx = ctx;
@@ -3767,6 +4038,7 @@ function startThumbLoad(item) {
   if (!keepVisibleOnReload) img.style.opacity = '0';
 
   let retries = item.__thumbRetry || 0;
+  let candidateIndex = 0;
   let done = false;
   let timer = 0;
 
@@ -3864,6 +4136,23 @@ function startThumbLoad(item) {
     }, state.cfg.thumbRetryDelayMs || 0);
   };
 
+  const scheduleNextCandidate = function() {
+    if (done) return true;
+    if ((candidateIndex + 1) >= candidateUrls.length) return false;
+    clearOverlayShowTimer(item);
+    candidateIndex += 1;
+    retries = 0;
+    item.__thumbRetry = 0;
+    img.onload = null;
+    img.onerror = null;
+    if (img.dataset) img.dataset.src = candidateUrls[candidateIndex];
+    setTimeout(function() {
+      if (done) return;
+      attempt();
+    }, state.cfg.thumbRetryDelayMs || 0);
+    return true;
+  };
+
   const attempt = function() {
     if (done) return;
     if (!item.__thumbCtx || item.__thumbCtx.token !== token) {
@@ -3872,7 +4161,9 @@ function startThumbLoad(item) {
     }
     if (timer) clearTimeout(timer);
     item.__thumbStartedAt = Date.now();
-    const targetSrc = retries > 0 ? addRetryBuster(src, retries) : src;
+    const baseSrc = candidateUrls[candidateIndex] || src;
+    const targetSrc = retries > 0 ? addRetryBuster(baseSrc, retries) : baseSrc;
+    if (img.dataset) img.dataset.src = baseSrc;
     scheduleOverlayShow(item, overlay, getOverlayDelay());
     img.onload = function() {
       if (done) return;
@@ -3905,6 +4196,7 @@ function startThumbLoad(item) {
         if (!nw || !nh) {
           markThumbProgress();
           if (state.log && state.log.push) state.log.push('thumb', 'dim0 retry');
+          if (scheduleNextCandidate()) return;
           if (retries < (state.cfg.thumbRetryMax || 0)) {
             scheduleRetry();
           } else {
@@ -3932,6 +4224,7 @@ function startThumbLoad(item) {
       }
       markThumbProgress();
       if (timer) clearTimeout(timer);
+      if (scheduleNextCandidate()) return;
       if (retries < (state.cfg.thumbRetryMax || 0)) {
         scheduleRetry();
       } else {
@@ -3945,6 +4238,7 @@ function startThumbLoad(item) {
         return;
       }
       markThumbProgress();
+      if (scheduleNextCandidate()) return;
       if (retries < (state.cfg.thumbRetryMax || 0)) {
         scheduleRetry();
       } else {
@@ -3971,6 +4265,37 @@ function getMediaBadgeInfo(item) {
     return { text: text, full: t };
   }
   return null;
+}
+
+function renderEmbedPlaceholder(ph, item) {
+  if (!ph) return;
+  ph.textContent = '';
+  while (ph.firstChild) ph.removeChild(ph.firstChild);
+  ph.style.flexDirection = '';
+  ph.style.gap = '';
+  ph.style.padding = '';
+  ph.style.textAlign = '';
+  ph.title = 'TAP FOR LB ' + item.embedType;
+  const previewLines = getEmbedPreviewLines(item);
+  if (previewLines && previewLines.length) {
+    ph.style.flexDirection = 'column';
+    ph.style.gap = '4px';
+    ph.style.padding = '10px 8px';
+    ph.style.textAlign = 'center';
+    previewLines.forEach(function(line, idx) {
+      const row = document.createElement('div');
+      row.textContent = line;
+      row.style.maxWidth = '100%';
+      row.style.overflowWrap = 'anywhere';
+      row.style.lineHeight = '1.3';
+      row.style.color = idx === 0 ? '#d0d0d0' : '#9a9a9a';
+      row.style.fontSize = idx === 0 ? '12px' : '10px';
+      row.style.fontWeight = idx === 0 ? '700' : '500';
+      ph.appendChild(row);
+    });
+    return;
+  }
+  ph.textContent = 'TAP FOR LB ' + item.embedType;
 }
 
 function createCard(item) {
@@ -4056,27 +4381,7 @@ function createCard(item) {
     ph.className = 'ph';
     ph.style.height = th + 'px';
     ph.style.width = '100%';
-    ph.title = 'TAP FOR LB ' + item.embedType;
-    const previewLines = getEmbedPreviewLines(item);
-    if (previewLines && previewLines.length) {
-      ph.style.flexDirection = 'column';
-      ph.style.gap = '4px';
-      ph.style.padding = '10px 8px';
-      ph.style.textAlign = 'center';
-      previewLines.forEach(function(line, idx) {
-        const row = document.createElement('div');
-        row.textContent = line;
-        row.style.maxWidth = '100%';
-        row.style.overflowWrap = 'anywhere';
-        row.style.lineHeight = '1.3';
-        row.style.color = idx === 0 ? '#d0d0d0' : '#9a9a9a';
-        row.style.fontSize = idx === 0 ? '12px' : '10px';
-        row.style.fontWeight = idx === 0 ? '700' : '500';
-        ph.appendChild(row);
-      });
-    } else {
-      ph.textContent = 'TAP FOR LB ' + item.embedType;
-    }
+    renderEmbedPlaceholder(ph, item);
     thumb.appendChild(ph);
     const badge = document.createElement('div');
     badge.className = 'badge';
@@ -4085,9 +4390,10 @@ function createCard(item) {
     badge.title = badgeInfo ? badgeInfo.full : (((item.embedType || '').toUpperCase()) || 'OTHER');
     badge.setAttribute('aria-label', badgeInfo ? badgeInfo.full : (((item.embedType || '').toUpperCase()) || 'OTHER'));
     thumb.appendChild(badge);
-    const embedThumbUrl = getEmbedThumbUrl(item);
-    if (embedThumbUrl) {
-      appendThumbImage(embedThumbUrl, true);
+    const embedThumbUrls = getEmbedThumbUrls(item);
+    item.__thumbCandidates = embedThumbUrls.slice();
+    if (embedThumbUrls.length) {
+      appendThumbImage(embedThumbUrls[0], true);
       item.__thumbPreview = true;
     }
   }
@@ -4253,6 +4559,10 @@ function updateCard(item) {
   if (thumbBtn) {
     const playable = (item.kind === 'video' || item.kind === 'embed') && !thumbBtn.querySelector('iframe');
     thumbBtn.classList.toggle('is-playable', playable);
+    if (item.kind === 'embed' && !thumbBtn.querySelector('iframe')) {
+      const ph = thumbBtn.querySelector('.ph');
+      if (ph) renderEmbedPlaceholder(ph, item);
+    }
   }
   let mediaBadge = item.card.querySelector('.thumb .badge');
   if (!mediaBadge) {
@@ -4496,6 +4806,24 @@ function clearLightboxFrame() {
   }
 }
 
+function resetLightboxLoad(reason) {
+  const ctx = state.lb ? state.lb.__ctx : null;
+  if (ctx && typeof ctx.abort === 'function') {
+    try { ctx.abort(reason || 'reset'); } catch (e) {}
+  }
+  if (state.lb) {
+    state.lb.__ctx = null;
+    state.lb.__loading = false;
+    state.lb.__token = (state.lb.__token || 0) + 1;
+    return state.lb.__token;
+  }
+  return 0;
+}
+
+function isLightboxTokenCurrent(token) {
+  return !!(state.lb && token && state.lb.__token === token);
+}
+
 function renderLightboxItem() {
   const item = state.lb.list[state.lb.index];
   if (!item) return;
@@ -4512,11 +4840,11 @@ function renderLightboxItem() {
     state.wd.lbKickCount = 0;
   }
   state.lb.currentId = item.id;
-  state.lb.__loading = false;
-  state.lb.__ctx = null;
+  const lbToken = resetLightboxLoad('switch');
   clearLightboxFrame();
   state.lb.badge.style.display = 'none';
   if (item.kind === 'video') {
+    const token = lbToken;
     const v = document.createElement('video');
     let host = 'unknown';
     try { host = new URL(item.url || '', location.href).hostname || 'unknown'; } catch (e) {}
@@ -4604,6 +4932,7 @@ function renderLightboxItem() {
       state.lb.badge.style.display = 'none';
     };
     const markVideoSuccess = function() {
+      if (!isLightboxTokenCurrent(token)) return;
       if (videoSuccess) return;
       videoSuccess = true;
       videoFailCandidate = null;
@@ -4613,6 +4942,7 @@ function renderLightboxItem() {
       hideVideoFailBadge();
     };
     const showVideoFail = function(info) {
+      if (!isLightboxTokenCurrent(token)) return;
       state.lb.badge.textContent = 'VIDEO FAIL\n' + info;
       state.lb.badge.title = info;
       state.lb.badge.setAttribute('aria-label', 'VIDEO FAIL ' + info);
@@ -4620,6 +4950,7 @@ function renderLightboxItem() {
       state.lb.badge.style.display = 'block';
     };
     const confirmFinalVideoFail = function() {
+      if (!isLightboxTokenCurrent(token)) return;
       if (videoSuccess) return;
       if (!videoFailCandidate) return;
       const code = (v.error && typeof v.error.code === 'number') ? v.error.code : 0;
@@ -4633,6 +4964,7 @@ function renderLightboxItem() {
       showVideoFail(videoFailCandidate.info);
     };
     const scheduleFinalVideoFail = function(reason) {
+      if (!isLightboxTokenCurrent(token)) return;
       const code = (v.error && typeof v.error.code === 'number') ? v.error.code : 0;
       const net = typeof v.networkState === 'number' ? v.networkState : 0;
       const ready = typeof v.readyState === 'number' ? v.readyState : 0;
@@ -4657,6 +4989,18 @@ function renderLightboxItem() {
       videoFailTimer = setTimeout(function() {
         confirmFinalVideoFail();
       }, 1200);
+    };
+    state.lb.__ctx = {
+      token: token,
+      abort: function(reason) {
+        clearVideoFailTimer();
+        clearNoSourceTimer();
+        clearFallbackPendingTimer();
+        videoSuccess = true;
+        videoFailCandidate = null;
+        try { v.pause(); } catch (e) {}
+        try { v.removeAttribute('src'); v.load(); } catch (e) {}
+      }
     };
     v.controls = true;
     v.setAttribute('controls', '');
@@ -4688,38 +5032,48 @@ function renderLightboxItem() {
       }, 1200);
     });
     if (!item.poster) {
-      renderVideoPoster(v, item);
+      renderVideoPoster(v, item, token);
     }
   } else if (item.kind === 'embed') {
+    const token = lbToken;
     const iframe = document.createElement('iframe');
     iframe.className = 'lb-embed';
     applyEmbedIframeAttrs(iframe, item);
     iframe.loading = 'eager';
     const src = item.embedUrl || item.url;
     const auto = isAutoEmbedItem(item);
-    iframe.addEventListener('error', function() {
+    const showEmbedFail = function() {
+      if (!isLightboxTokenCurrent(token)) return;
       state.lb.badge.textContent = 'EMBED FAIL';
       state.lb.badge.style.display = 'block';
+    };
+    state.lb.__ctx = {
+      token: token,
+      abort: function(reason) {
+        try { iframe.removeAttribute('src'); } catch (e) {}
+        try { iframe.src = 'about:blank'; } catch (e) {}
+      }
+    };
+    iframe.addEventListener('error', function() {
+      showEmbedFail();
     });
     state.lb.frame.appendChild(iframe);
     if (src && auto) {
       const et = (item.embedType || '').toUpperCase();
       if (et === 'TT') {
         try { iframe.src = src; } catch (e) {
-          state.lb.badge.textContent = 'EMBED FAIL';
-          state.lb.badge.style.display = 'block';
+          showEmbedFail();
         }
       } else {
         requestAnimationFrame(function() {
+          if (!isLightboxTokenCurrent(token)) return;
           try { iframe.src = src; } catch (e) {
-            state.lb.badge.textContent = 'EMBED FAIL';
-            state.lb.badge.style.display = 'block';
+            showEmbedFail();
           }
         });
       }
     } else {
-      state.lb.badge.textContent = 'EMBED FAIL';
-      state.lb.badge.style.display = 'block';
+      showEmbedFail();
     }
   } else {
     const img = document.createElement('img');
@@ -4737,7 +5091,7 @@ function renderLightboxItem() {
     let timer = 0;
     let overlayShowTimer = 0;
     const src = getDisplayUrl(item);
-    const token = (state.lb.__token = (state.lb.__token || 0) + 1);
+    const token = lbToken;
     const clearOverlayShowTimer = function() {
       if (!overlayShowTimer) return;
       clearTimeout(overlayShowTimer);
@@ -4914,11 +5268,15 @@ function renderLightboxItem() {
   }
 }
 
-function renderVideoPoster(video, item) {
+function renderVideoPoster(video, item, token) {
   const canvas = document.createElement('canvas');
   const badge = state.lb.badge;
   let done = false;
+  const isCurrent = function() {
+    return !token || isLightboxTokenCurrent(token);
+  };
   const fail = function() {
+    if (!isCurrent()) return;
     if (done) return;
     done = true;
     const t = String(badge && badge.textContent || '');
@@ -4967,6 +5325,7 @@ function renderVideoPoster(video, item) {
 
 function closeLightbox() {
   if (!state.lb.overlay) return;
+  resetLightboxLoad('close');
   state.lb.overlay.classList.remove('open');
   state.lb.open = false;
   state.lb.__loading = false;
@@ -5226,9 +5585,9 @@ function extractImgurInfo(raw) {
   const host = (u.hostname || '').toLowerCase();
   const path = u.pathname || '';
   if (host === 'i.imgur.com' || host.endsWith('.i.imgur.com')) {
-    const direct = /^\/([^/?#]+?)(?:\.(?:jpe?g|png|gif|webp|avif|bmp|gifv|mp4))?(?:[/?#]|$)/i.exec(path);
+    const direct = /^\/([^/?#]+?)(?:\.(jpe?g|png|gif|webp|avif|bmp|gifv|mp4))?(?:[/?#]|$)/i.exec(path);
     if (direct && /^[a-z0-9]+$/i.test(direct[1] || '')) {
-      return { kind: 'image', id: direct[1] || '' };
+      return { kind: 'image', id: direct[1] || '', ext: String(direct[2] || '').toLowerCase() };
     }
     return null;
   }
@@ -5237,31 +5596,75 @@ function extractImgurInfo(raw) {
   if (album) return { kind: 'album', id: album[1] || '' };
   const gallery = /^\/gallery\/([^/?#]+)(?:[/?#]|$)/i.exec(path);
   if (gallery) return { kind: 'gallery', id: gallery[1] || '' };
-  const single = /^\/([^/?#]+?)(?:\.(?:jpe?g|png|gif|webp|avif|bmp|gifv|mp4))?(?:[/?#]|$)/i.exec(path);
+  const single = /^\/([^/?#]+?)(?:\.(jpe?g|png|gif|webp|avif|bmp|gifv|mp4))?(?:[/?#]|$)/i.exec(path);
   if (!single || !single[1]) return null;
   const seg = single[1];
   if (!/^[a-z0-9]+$/i.test(seg)) return null;
   if (/^(?:a|gallery|t|topic|r|user|account|signin|register|remix|download)$/i.test(seg)) return null;
-  return { kind: 'image', id: seg };
+  return { kind: 'image', id: seg, ext: String(single[2] || '').toLowerCase() };
 }
 
 function getImgurInfoFromItem(item) {
   return findEmbedInfoFromItem(item, extractImgurInfo);
 }
 
-function getYoutubeThumbUrl(item) {
+function uniqueThumbUrls(urls) {
+  const out = [];
+  const seen = new Set();
+  (urls || []).forEach(function(u) {
+    const s = String(u || '').trim();
+    if (!s || seen.has(s)) return;
+    seen.add(s);
+    out.push(s);
+  });
+  return out;
+}
+
+function getYoutubeThumbUrls(item) {
   const id = getYoutubeIdFromItem(item);
-  if (id) return 'https://i.ytimg.com/vi/' + id + '/hqdefault.jpg';
-  return '';
+  if (!id) return [];
+  return uniqueThumbUrls([
+    'https://i.ytimg.com/vi/' + id + '/maxresdefault.jpg',
+    'https://i.ytimg.com/vi/' + id + '/sddefault.jpg',
+    'https://i.ytimg.com/vi/' + id + '/hqdefault.jpg',
+    'https://i.ytimg.com/vi/' + id + '/mqdefault.jpg',
+    'https://i.ytimg.com/vi/' + id + '/default.jpg'
+  ]);
+}
+
+function getYoutubeThumbUrl(item) {
+  const urls = getYoutubeThumbUrls(item);
+  return urls[0] || '';
+}
+
+function getImgurThumbUrls(item) {
+  const info = getImgurInfoFromItem(item);
+  if (!info || info.kind !== 'image' || !info.id) return [];
+  const extList = [];
+  const addExt = function(ext) {
+    const clean = String(ext || '').toLowerCase();
+    if (!clean || extList.indexOf(clean) >= 0) return;
+    if (!/^(?:jpe?g|png|gif|webp|avif|bmp)$/i.test(clean)) return;
+    extList.push(clean === 'jpeg' ? 'jpg' : clean);
+  };
+  addExt(info.ext || '');
+  addExt('jpg');
+  addExt('png');
+  addExt('webp');
+  const urls = [];
+  extList.forEach(function(ext) {
+    urls.push('https://i.imgur.com/' + info.id + 'l.' + ext);
+    urls.push('https://i.imgur.com/' + info.id + 'm.' + ext);
+  });
+  return uniqueThumbUrls(urls);
 }
 
 function getImgurThumbUrl(item) {
-  const info = getImgurInfoFromItem(item);
-  if (!info || info.kind !== 'image' || !info.id) return '';
-  return 'https://i.imgur.com/' + info.id + 'l.jpg';
+  const urls = getImgurThumbUrls(item);
+  return urls[0] || '';
 }
 
-function getEmbedPreviewLines(item) {
+function getEmbedDetailLines(item) {
   if (!item || item.kind !== 'embed') return [];
   const t = (item.embedType || '').toUpperCase();
   if (t === 'X') {
@@ -5295,25 +5698,34 @@ function getEmbedPreviewLines(item) {
   return [];
 }
 
+function getEmbedPreviewLines(item) {
+  if (!item || item.kind !== 'embed') return [];
+  const previewText = compactPreviewText(item.previewText || '', 64);
+  const detailLines = getEmbedDetailLines(item);
+  if (!previewText) return detailLines;
+  if (!detailLines.length) return [previewText];
+  return [previewText, detailLines.join(' / ')];
+}
+
 function getEmbedMetaLabel(item) {
-  const lines = getEmbedPreviewLines(item);
-  if (!lines || !lines.length) return '';
-  return lines.join(' / ');
+  const previewText = compactPreviewText(item && item.previewText ? item.previewText : '', 56);
+  const detailLines = getEmbedDetailLines(item);
+  if (previewText && detailLines.length) return previewText + ' / ' + detailLines.join(' / ');
+  if (previewText) return previewText;
+  return detailLines.join(' / ');
+}
+
+function getEmbedThumbUrls(item) {
+  if (!item || item.kind !== 'embed') return [];
+  const t = (item.embedType || '').toUpperCase();
+  if (t === 'YT') return getYoutubeThumbUrls(item);
+  if (t === 'IMGUR') return getImgurThumbUrls(item);
+  return [];
 }
 
 function getEmbedThumbUrl(item) {
-  if (!item || item.kind !== 'embed') return '';
-  const t = (item.embedType || '').toUpperCase();
-  if (t === 'YT') {
-    return getYoutubeThumbUrl(item);
-  }
-  if (t === 'IMGUR') {
-    return getImgurThumbUrl(item);
-  }
-  if (t === 'X' || t === 'TT' || t === 'INSTA') {
-    return '';
-  }
-  return '';
+  const urls = getEmbedThumbUrls(item);
+  return urls[0] || '';
 }
 
 function applyEmbedIframeAttrs(iframe, item) {
@@ -5672,39 +6084,36 @@ function getFailedItems(limit) {
 
 function updateInfo() {
   if (!state.ui.info) return;
-  if (state.ui.infoTimer) return;
-  const now = Date.now();
-  const minGap = 180;
-  const stats = collectVisibilityStats(0);
-  const visible = stats.visible;
-  const reasonText = formatHideReasonCounts(stats.counts, 4);
-  const text = `表示 ${visible} / 全体 ${state.items.list.length} / エラー ${state.items.errorCount}${reasonText ? ' / 非表示 ' + reasonText : ''}`;
-  const elapsed = now - (state.ui.infoLastAt || 0);
-  if (elapsed < minGap) {
-    if (text === state.ui.infoLastText) return;
-    if (state.ui.infoThrottleTimer) clearTimeout(state.ui.infoThrottleTimer);
-    state.ui.infoPendingText = text;
-    state.ui.infoThrottleTimer = setTimeout(function() {
-      state.ui.infoThrottleTimer = 0;
-      if (!state.ui.info || state.ui.infoTimer) return;
-      const pending = state.ui.infoPendingText;
-      state.ui.infoPendingText = '';
-      if (!pending) return;
-      state.ui.info.textContent = pending;
-      const at = Date.now();
-      state.ui.infoLastAt = at;
-      state.ui.infoLastText = pending;
-    }, minGap - elapsed);
+  if (state.ui.infoTimer) {
+    state.ui.__infoDirty = true;
     return;
   }
-  if (state.ui.infoThrottleTimer) {
-    clearTimeout(state.ui.infoThrottleTimer);
+  const now = Date.now();
+  const minGap = 180;
+  const elapsed = now - (state.ui.infoLastAt || 0);
+  const wait = Math.max(0, minGap - elapsed);
+  state.ui.__infoDirty = true;
+  if (state.ui.infoThrottleTimer) return;
+  state.ui.infoThrottleTimer = setTimeout(function() {
     state.ui.infoThrottleTimer = 0;
-  }
-  state.ui.infoPendingText = '';
-  state.ui.info.textContent = text;
-  state.ui.infoLastAt = now;
-  state.ui.infoLastText = text;
+    if (!state.ui.info) return;
+    if (state.ui.infoTimer) {
+      state.ui.__infoDirty = true;
+      return;
+    }
+    state.ui.__infoDirty = false;
+    const stats = collectVisibilityStats(0);
+    const visible = stats.visible;
+    const reasonText = formatHideReasonCounts(stats.counts, 4);
+    const text = `表示 ${visible} / 全体 ${state.items.list.length} / エラー ${state.items.errorCount}${reasonText ? ' / 非表示 ' + reasonText : ''}`;
+    state.ui.infoPendingText = '';
+    if (text !== state.ui.infoLastText) {
+      state.ui.info.textContent = text;
+      const at = Date.now();
+      state.ui.infoLastAt = at;
+      state.ui.infoLastText = text;
+    }
+  }, wait);
 }
 
 function updateProgress(phase, token) {
@@ -6195,13 +6604,36 @@ function disconnectMutationObserver() {
   }
   state.mo.pending = false;
   state.mo.dirty = false;
+  state.mo.roots = [];
+  state.mo.rootSet = null;
+  state.mo.full = false;
 }
 
-function scheduleDomRescan(reason) {
+function queueDomRescanRoot(root) {
+  if (!state.mo || !root || root.nodeType !== 1) return;
+  if (state.mo.full) return;
+  const maxRoots = state.cfg.moMaxRoots || 24;
+  if (!state.mo.rootSet && typeof WeakSet === 'function') state.mo.rootSet = new WeakSet();
+  if (state.mo.rootSet) {
+    if (state.mo.rootSet.has(root)) return;
+    state.mo.rootSet.add(root);
+  }
+  if (state.mo.roots.length >= maxRoots) {
+    state.mo.full = true;
+    state.mo.roots = [];
+    state.mo.rootSet = null;
+    return;
+  }
+  state.mo.roots.push(root);
+}
+
+function scheduleDomRescan(reason, root) {
   if (!state.cfg || !state.cfg.moEnabled) return;
   if (!state.mo) return;
   state.mo.dirty = true;
   state.mo.lastReason = reason || 'mo';
+  if (root) queueDomRescanRoot(root);
+  else state.mo.full = true;
   if (state.mo.pending) return;
   state.mo.pending = true;
   if (state.mo.t) clearTimeout(state.mo.t);
@@ -6232,11 +6664,21 @@ function scheduleDomRescan(reason) {
 function runDomRescanOnce(reason) {
   if (state.abort && state.abort.aborted) return;
   const before = state.items.list.length;
-  addItems(extractFromDocument(document, 'dom', location.href));
+  const roots = (!state.mo.full && state.mo.roots && state.mo.roots.length) ? state.mo.roots.slice() : null;
+  state.mo.roots = [];
+  state.mo.rootSet = null;
+  state.mo.full = false;
+  if (roots && roots.length) {
+    roots.forEach(function(root) {
+      if (root && root.isConnected !== false) addItems(extractFromDocument(root, 'dom', location.href));
+    });
+  } else {
+    addItems(extractFromDocument(document, 'dom', location.href));
+  }
   const after = state.items.list.length;
   const added = after - before;
   if (state.log && state.log.push) {
-    state.log.push('mo', 'rescan dom reason=' + (reason || '') + ' added=+' + added + ' total=' + after);
+    state.log.push('mo', 'rescan dom reason=' + (reason || '') + ' scope=' + (roots ? ('partial:' + roots.length) : 'full') + ' added=+' + added + ' total=' + after);
   }
   updateInfo();
 }
@@ -6277,6 +6719,7 @@ function setupMutationObserver() {
         return;
       }
       let reason = '';
+      let root = null;
       for (let i = 0; i < mutations.length; i += 1) {
         const m = mutations[i];
         if (m.type === 'childList') {
@@ -6285,6 +6728,7 @@ function setupMutationObserver() {
             const r = findReasonFromNode(nodes[j]);
             if (r) {
               reason = r;
+              root = nodes[j] && nodes[j].nodeType === 1 ? nodes[j] : null;
               break;
             }
           }
@@ -6295,12 +6739,13 @@ function setupMutationObserver() {
             const tr = reasonFromTag(t.tagName);
             if (tr && name) {
               reason = 'attr-' + name;
+              root = t;
             }
           }
         }
         if (reason) break;
       }
-      if (reason) scheduleDomRescan(reason);
+      if (reason) scheduleDomRescan(reason, root);
     });
     state.mo.obs.observe(target, {
       childList: true,
@@ -6348,31 +6793,7 @@ async function main() {
       showBootBadgeGlobal('panel not visible (scroll restored)');
     }, 800);
 
-    window.__FMP_ABORT__ = state.abort;
-    window.__FMP_ABORT_CONTROLLERS__ = state.abort.controllers;
-    window.__FMP_ITEMS__ = state.items.list;
-    window.__FMP_SEEN__ = state.seen.map;
-    window.__FMP_SEEN_ORDER__ = state.seen.order;
-    window.__FMP_GROUP_BEST__ = state.groupBest;
-    window.__FMP_FILTER__ = state.filter;
-    window.__FMP_STOP_CRAWL__ = abortAll;
-    window.__FMP_SET_FILTER__ = setFilter;
-    window.__FMP_APPLY_FILTER_SORT__ = applyFilterSort;
-    window.__FMP_APPLY_ERROR_VIS__ = applyErrorVis;
-    window.__FMP_LB_OPEN__ = function(idOrIndex) {
-      if (typeof idOrIndex === 'number') {
-        buildLightboxList();
-        if (idOrIndex >= 0 && idOrIndex < state.lb.list.length) {
-          state.lb.index = idOrIndex;
-          renderLightboxItem();
-          state.lb.overlay.classList.add('open');
-          state.lb.open = true;
-          if (state.thumb) state.thumb.paused = true;
-        }
-      } else if (typeof idOrIndex === 'string') {
-        openLightboxById(idOrIndex);
-      }
-    };
+    publishDebugGlobals();
     if (typeof window.__FMP_ON_LB_CLOSE__ === 'undefined') window.__FMP_ON_LB_CLOSE__ = null;
 
     createLightbox();
