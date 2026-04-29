@@ -281,9 +281,12 @@ javascript:(function(){
 /* rev1.101.14:
  - make sameSite conservative: same-origin or explicit exact host allowlist only
  */
+/* rev1.101.15:
+ * add lightweight runtime/status marker and DOM active attr for shortcut chain; cleanup removes globals/attr
+  */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101.14';
+const SCRIPT_REV = '1.101.15';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -414,7 +417,12 @@ const state = {
 
 /* [00] bootstrap/guard/cleanup */
 const ROOT_ID = '__fmp_root__';
+const FMP_ACTIVE_ATTR = 'data-nf-img-view-active';
+const FMP_RUNTIME_KEY = '__FMP_RUNTIME__';
+const FMP_STATUS_KEY = '__FMP_STATUS__';
 const DEBUG_GLOBAL_KEYS = [
+  '__FMP_RUNTIME__',
+  '__FMP_STATUS__',
   '__FMP_ABORT__',
   '__FMP_ABORT_CONTROLLERS__',
   '__FMP_ITEMS__',
@@ -434,6 +442,61 @@ function clearDebugGlobals() {
     try { window[key] = null; } catch (e) {}
     try { delete window[key]; } catch (e) {}
   });
+}
+
+function setActiveMarker(active) {
+  try {
+    const html = document.documentElement;
+    if (!html) return;
+    if (active) html.setAttribute(FMP_ACTIVE_ATTR, '1');
+    else html.removeAttribute(FMP_ACTIVE_ATTR);
+  } catch (e) {}
+}
+
+function getRuntimeStats() {
+  const crawl = state && state.crawl ? state.crawl : {};
+  const items = state && state.items ? state.items : {};
+  const thumb = state && state.thumb ? state.thumb : {};
+  const lb = state && state.lb ? state.lb : {};
+  return {
+    name: SCRIPT_NAME,
+    rev: SCRIPT_REV,
+    active: !!document.getElementById(ROOT_ID),
+    running: !!window.__FMP_RUNNING__,
+    aborted: !!(state && state.abort && state.abort.aborted),
+    items: items.list ? items.list.length : 0,
+    errors: items.errorCount || 0,
+    noise: items.noiseCount || 0,
+    crawlStarted: !!crawl.started,
+    crawlDone: !!crawl.done,
+    crawlVisited: crawl.visited ? crawl.visited.size : 0,
+    crawlQueue: typeof crawlQueueLength === 'function' ? crawlQueueLength() : 0,
+    crawlInFlight: crawl.inFlight || 0,
+    thumbQueue: typeof thumbQueueLength === 'function' ? thumbQueueLength() : 0,
+    thumbInFlight: thumb.inFlight || 0,
+    lightboxOpen: !!lb.open
+  };
+}
+
+function publishRuntime() {
+  try {
+    const runtime = window[FMP_RUNTIME_KEY] || {};
+    runtime.name = SCRIPT_NAME;
+    runtime.rev = SCRIPT_REV;
+    runtime.isActive = function() {
+      return !!document.getElementById(ROOT_ID);
+    };
+    runtime.isRunning = function() {
+      return !!window.__FMP_RUNNING__;
+    };
+    runtime.getStats = getRuntimeStats;
+    runtime.dispose = function() {
+      try { cleanupUi(); } catch (e) {}
+      try { finalize('ok', { reason: 'runtime-dispose' }); } catch (e) {}
+    };
+    window[FMP_RUNTIME_KEY] = runtime;
+    window[FMP_STATUS_KEY] = getRuntimeStats();
+  } catch (e) {}
 }
 
 function publishDebugGlobals() {
@@ -547,6 +610,7 @@ function cleanupUi() {
     state.ui.root.parentNode.removeChild(state.ui.root);
   }
   state.ui.root = null;
+  setActiveMarker(false);
   clearDebugGlobals();
 }
 
@@ -571,6 +635,8 @@ function guardAndCleanup() {
   window.__FMP_SCRIPT_NAME__ = SCRIPT_NAME;
   window.__FMP_SCRIPT_REV__ = SCRIPT_REV;
   window.__FMP_RUNNING__ = true;
+  setActiveMarker(true);
+  publishRuntime();
 }
 
 let finalizeOnce = false;
@@ -578,6 +644,9 @@ function finalize(status, detail) {
   if (finalizeOnce) return;
   finalizeOnce = true;
   window.__FMP_RUNNING__ = false;
+  try {
+    if (window[FMP_RUNTIME_KEY]) publishRuntime();
+  } catch (e) {}
   disconnectMutationObserver();
   stopWatchdog();
   updateProgress('idle', status);
