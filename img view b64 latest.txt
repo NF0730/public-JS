@@ -290,9 +290,30 @@ javascript:(function(){
 /* rev1.101.17:
  * make scroll-time thumb concurrency effective on large iPhone lists by using scrollMax while scrolling; keep big-list throttle for non-scroll
   */
+/* rev1.101.18:
+ * rescue in-view thumb reveal during scroll when IO in-view flag is stale; only one card rect check inside revealThumb
+  */
+/* rev1.101.19:
+ * lighten iOS repaint helper by batching repaint images per frame and skipping global layout flush while scrolling
+  */
+/* rev1.101.20:
+ * delay LOADING overlay DOM creation until the overlay delay expires, so fast thumbnails do not create overlay nodes
+  */
+/* rev1.101.21:
+ * delay updateCard reload LOADING overlay too; remove immediate overlay creation before thumbEnqueue
+  */
+/* rev1.101.22:
+ * harden cleanup by aborting active thumb contexts, clearing overlay timers/queues, and resetting Lightbox load context
+  */
+/* rev1.101.23:
+ * cleanup previous instance thumb contexts from window.__FMP_ITEMS__ before replacing runtime globals
+  */
+/* rev1.101.24:
+ * cleanup old root DOM timers/handlers before removing previous root on restart
+  */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101.17';
+const SCRIPT_REV = '1.101.24';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -541,9 +562,190 @@ function disconnectThumbObserver() {
   }
 }
 
+function cleanupActiveThumbLoads(reason) {
+  const why = reason || 'cleanup';
+  try {
+    if (state.items && state.items.list && state.items.list.length) {
+      state.items.list.forEach(function(item) {
+        if (!item) return;
+
+        try { clearOverlayShowTimer(item); } catch (e) {}
+
+        try {
+          if (item.__thumbCtx && typeof item.__thumbCtx.abort === 'function') {
+            item.__thumbCtx.abort(why);
+          }
+        } catch (e) {}
+
+        try {
+          const img = item.__thumbImg || (item.card && item.card.querySelector ? item.card.querySelector('img') : null);
+          if (img) {
+            img.onload = null;
+            img.onerror = null;
+            if (img.dataset) img.dataset.fmpRevealQueued = '0';
+            if (img.dataset) img.dataset.fmpFitQueued = '0';
+            if (img.dataset) img.dataset.fmpNudged = '0';
+            try { img.removeAttribute('src'); } catch (e2) {}
+          }
+        } catch (e) {}
+
+        try {
+          if (item.card) hideThumbOverlay(item.card);
+        } catch (e) {}
+
+        item.__thumbCtx = null;
+        item.__thumbLoading = false;
+        item.__thumbQueuedPri = 0;
+      });
+    }
+  } catch (e) {}
+
+  try {
+    if (state.thumb) {
+      if (state.thumb.queued && typeof state.thumb.queued.clear === 'function') state.thumb.queued.clear();
+      if (state.thumb.queuePri) state.thumb.queuePri.length = 0;
+      if (state.thumb.queue) state.thumb.queue.length = 0;
+      state.thumb.queuePriHead = 0;
+      state.thumb.queueHead = 0;
+      state.thumb.inFlight = 0;
+      state.thumb.pumpScheduled = false;
+      state.thumb.paused = false;
+    }
+  } catch (e) {}
+}
+
+function cleanupLightboxLoad(reason) {
+  try {
+    if (typeof resetLightboxLoad === 'function') resetLightboxLoad(reason || 'cleanup');
+  } catch (e) {}
+
+  try {
+    if (state.lb) {
+      state.lb.open = false;
+      state.lb.index = -1;
+      state.lb.currentId = null;
+      state.lb.__ctx = null;
+      state.lb.__loading = false;
+    }
+  } catch (e) {}
+}
+
+function cleanupExternalThumbItems(list, reason) {
+  const why = reason || 'external-cleanup';
+  if (!list || !list.length) return;
+  try {
+    Array.prototype.forEach.call(list, function(item) {
+      if (!item) return;
+
+      try {
+        if (item.__overlayShowTimer) {
+          clearTimeout(item.__overlayShowTimer);
+          item.__overlayShowTimer = 0;
+        }
+      } catch (e) {}
+
+      try {
+        if (item.__thumbCtx && typeof item.__thumbCtx.abort === 'function') {
+          item.__thumbCtx.abort(why);
+        }
+      } catch (e) {}
+
+      try {
+        const card = item.card || null;
+        const img = item.__thumbImg || (card && card.querySelector ? card.querySelector('img') : null);
+        if (img) {
+          img.onload = null;
+          img.onerror = null;
+          try { img.removeAttribute('src'); } catch (e2) {}
+        }
+      } catch (e) {}
+
+      try {
+        const card = item.card || null;
+        if (card && card.querySelector) {
+          const overlay = card.querySelector('.ph-load');
+          if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        }
+      } catch (e) {}
+
+      item.__thumbCtx = null;
+      item.__thumbLoading = false;
+      item.__thumbQueuedPri = 0;
+    });
+  } catch (e) {}
+}
+
+function cleanupExternalRootDom(root, reason) {
+  if (!root || !root.querySelectorAll) return;
+  try {
+    Array.prototype.forEach.call(root.querySelectorAll('.ph-load'), function(overlay) {
+      if (!overlay) return;
+      try {
+        if (overlay.__hideTimer) {
+          clearTimeout(overlay.__hideTimer);
+          overlay.__hideTimer = 0;
+        }
+      } catch (e) {}
+      try {
+        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      } catch (e) {}
+    });
+  } catch (e) {}
+
+  try {
+    Array.prototype.forEach.call(root.querySelectorAll('img'), function(img) {
+      if (!img) return;
+      try { img.onload = null; } catch (e) {}
+      try { img.onerror = null; } catch (e) {}
+      try {
+        if (img.__fmpGpuRaf1) {
+          cancelAnimationFrame(img.__fmpGpuRaf1);
+          img.__fmpGpuRaf1 = 0;
+        }
+      } catch (e) {}
+      try {
+        if (img.__fmpGpuRaf2) {
+          cancelAnimationFrame(img.__fmpGpuRaf2);
+          img.__fmpGpuRaf2 = 0;
+        }
+      } catch (e) {}
+      try { img.__fmpGpuActive = false; } catch (e) {}
+      try {
+        if (img.classList) img.classList.remove('fmp-gpu');
+      } catch (e) {}
+      try {
+        if (img.dataset) {
+          img.dataset.fmpRevealQueued = '0';
+          img.dataset.fmpFitQueued = '0';
+          img.dataset.fmpNudged = '0';
+        }
+      } catch (e) {}
+      try { img.removeAttribute('src'); } catch (e) {}
+    });
+  } catch (e) {}
+
+  try {
+    Array.prototype.forEach.call(root.querySelectorAll('video, iframe'), function(node) {
+      if (!node) return;
+      try { node.onload = null; } catch (e) {}
+      try { node.onerror = null; } catch (e) {}
+      try { node.removeAttribute('src'); } catch (e) {}
+      try { node.removeAttribute('srcdoc'); } catch (e) {}
+      try {
+        if (node.pause && typeof node.pause === 'function') node.pause();
+      } catch (e) {}
+      try {
+        if (node.load && typeof node.load === 'function') node.load();
+      } catch (e) {}
+    });
+  } catch (e) {}
+}
+
 function cleanupUi() {
   disconnectMutationObserver();
   stopWatchdog();
+  cleanupLightboxLoad('cleanup-ui');
+  cleanupActiveThumbLoads('cleanup-ui');
   disconnectThumbObserver();
   if (state.thumb) {
     const grid = state.ui ? state.ui.grid : null;
@@ -570,8 +772,15 @@ function cleanupUi() {
       state.thumb.repaintRaf = 0;
     }
     if (state.thumb.repaintSet) state.thumb.repaintSet.clear();
+    state.thumb.repaintSet = null;
     if (state.thumb.uiQueue) state.thumb.uiQueue.length = 0;
     state.thumb.uiQueueHead = 0;
+    if (state.thumb.queued && typeof state.thumb.queued.clear === 'function') state.thumb.queued.clear();
+    if (state.thumb.queuePri) state.thumb.queuePri.length = 0;
+    if (state.thumb.queue) state.thumb.queue.length = 0;
+    state.thumb.queuePriHead = 0;
+    state.thumb.queueHead = 0;
+    state.thumb.inFlight = 0;
     state.thumb.scanNow = null;
     state.thumb.__inited = false;
   }
@@ -632,11 +841,25 @@ function guardAndCleanup() {
     }
   } catch (e) {}
   try {
+    if (window.__FMP_RUNNING__ && window.__FMP_ITEMS__) {
+      cleanupExternalThumbItems(window.__FMP_ITEMS__, 'restart-external');
+    }
+  } catch (e) {}
+  try {
     if (window.__FMP_RUNNING__ && typeof window.__FMP_STOP_CRAWL__ === 'function') {
       window.__FMP_STOP_CRAWL__('restart');
     }
   } catch (e) {}
+  try {
+    cleanupLightboxLoad('restart');
+    cleanupActiveThumbLoads('restart');
+  } catch (e) {}
   const old = document.getElementById(ROOT_ID);
+  if (old) {
+    try {
+      cleanupExternalRootDom(old, 'restart-root');
+    } catch (e) {}
+  }
   if (old && old.parentNode) old.parentNode.removeChild(old);
   window.__FMP_SCRIPT_NAME__ = SCRIPT_NAME;
   window.__FMP_SCRIPT_REV__ = SCRIPT_REV;
@@ -3246,29 +3469,29 @@ function clearOverlayShowTimer(item) {
   }
 }
 
-function scheduleOverlayShow(item, overlay, delayMs) {
-  if (!item || !overlay) return;
+function scheduleOverlayShow(item, card, delayMs) {
+  if (!item || !card) return;
   clearOverlayShowTimer(item);
   const wait = typeof delayMs === 'number' ? delayMs : 120;
-  const alreadyVisible = overlay.style.opacity === '1';
-  overlay.style.display = 'flex';
-  if (!alreadyVisible) overlay.style.opacity = '0';
   item.__overlayShowTimer = setTimeout(function() {
     item.__overlayShowTimer = 0;
     if (!item.__thumbLoading) return;
-    if (!overlay || !overlay.isConnected) return;
-    if (overlay.style.display === 'none') return;
+    if (!card || !card.isConnected) return;
 
-    // スクロール中はUI反映を遅延
+    const showNow = function() {
+      if (!item.__thumbLoading) return;
+      if (!card || !card.isConnected) return;
+      const overlay = showThumbOverlay(card, 'LOADING');
+      if (!overlay || !overlay.isConnected) return;
+      if (overlay.style.display === 'none') return;
+      overlay.style.opacity = '1';
+    };
+
     if (state.thumb && state.thumb.pausedByScroll) {
-      thumbQueueUi(function() {
-        if (!overlay || !overlay.isConnected) return;
-        if (overlay.style.display === 'none') return;
-        overlay.style.opacity = '1';
-      });
+      thumbQueueUi(showNow);
       return;
     }
-    overlay.style.opacity = '1';
+    showNow();
   }, wait);
 }
 
@@ -3280,14 +3503,20 @@ function hideThumbOverlay(card) {
     clearTimeout(overlay.__hideTimer);
     overlay.__hideTimer = 0;
   }
+  const removeOverlay = function() {
+    try {
+      if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      else if (overlay) overlay.style.display = 'none';
+    } catch (e) {}
+  };
   if (overlay.style.opacity === '0') {
-    overlay.style.display = 'none';
+    removeOverlay();
     return;
   }
   overlay.style.opacity = '0';
   overlay.__hideTimer = setTimeout(function() {
     overlay.__hideTimer = 0;
-    if (overlay) overlay.style.display = 'none';
+    removeOverlay();
   }, 160);
 }
 
@@ -3347,6 +3576,9 @@ function thumbFlushUiQueue() {
 
 function applyTempGpuClass(img) {
   if (!img || !img.classList) return;
+  if (!state.env || !state.env.isIOS) return;
+  if (img.__fmpGpuActive) return;
+  img.__fmpGpuActive = true;
   try {
     if (img.__fmpGpuRaf1) cancelAnimationFrame(img.__fmpGpuRaf1);
     if (img.__fmpGpuRaf2) cancelAnimationFrame(img.__fmpGpuRaf2);
@@ -3357,6 +3589,7 @@ function applyTempGpuClass(img) {
       try {
         if (img && img.classList) img.classList.remove('fmp-gpu');
       } catch (e) {}
+      img.__fmpGpuActive = false;
       img.__fmpGpuRaf1 = 0;
       img.__fmpGpuRaf2 = 0;
     });
@@ -3376,12 +3609,24 @@ function flushRepaintQueue() {
   state.thumb.repaintRaf = 0;
   const set = state.thumb.repaintSet;
   if (!set || !set.size) return;
-  const list = Array.from(set);
-  set.clear();
-  try {
-    const host = document.body || document.documentElement;
-    if (host) void host.offsetHeight;
-  } catch (e) {}
+
+  const maxPerFrame = state.env && state.env.isIPhone ? 4 : (state.env && state.env.isIPad ? 6 : 8);
+  const list = [];
+  set.forEach(function(img) {
+    if (list.length >= maxPerFrame) return;
+    list.push(img);
+  });
+  list.forEach(function(img) {
+    try { set.delete(img); } catch (e) {}
+  });
+
+  if (!state.thumb.pausedByScroll) {
+    try {
+      const host = document.body || document.documentElement;
+      if (host) void host.offsetHeight;
+    } catch (e) {}
+  }
+
   const restore = [];
   list.forEach(function(img) {
     if (!img || !img.isConnected) return;
@@ -3395,7 +3640,7 @@ function flushRepaintQueue() {
       });
     });
   }
-  if (state.thumb.repaintSet && state.thumb.repaintSet.size && !state.thumb.repaintRaf) {
+  if (set.size && !state.thumb.repaintRaf) {
     state.thumb.repaintRaf = requestAnimationFrame(flushRepaintQueue);
   }
 }
@@ -3558,6 +3803,19 @@ function revealThumb(card, img) {
         inViewNow = !!item.__thumbInView;
         resolvedFromIO = true;
       }
+    }
+    if (resolvedFromIO && !inViewNow) {
+      try {
+        const grid = state.ui ? state.ui.grid : null;
+        if (grid && typeof grid.getBoundingClientRect === 'function') {
+          const gridRect = grid.getBoundingClientRect();
+          if (isCardInGridView(card, gridRect)) {
+            inViewNow = true;
+            const item = state.items && state.items.byId ? state.items.byId.get(card.dataset.id) : null;
+            if (item) item.__thumbInView = 1;
+          }
+        }
+      } catch (e) {}
     }
     if (!resolvedFromIO) {
       let gridRect = null;
@@ -4094,7 +4352,6 @@ function startThumbLoad(item) {
   item.__thumbLoading = true;
   state.thumb.inFlight += 1;
   markThumbProgress();
-  const overlay = showThumbOverlay(card, 'LOADING');
   const getOverlayDelay = function() {
     const shownSrc = (img.currentSrc || img.src || '');
     const visible = img.style.opacity !== '0' && shownSrc && !isSameLoadedSrc(shownSrc, BLANK_GIF);
@@ -4107,7 +4364,7 @@ function startThumbLoad(item) {
     img.style.opacity !== '0' &&
     !isSameLoadedSrc(shownSrc, BLANK_GIF)
   );
-  scheduleOverlayShow(item, overlay, getOverlayDelay());
+  scheduleOverlayShow(item, card, getOverlayDelay());
   if (!keepVisibleOnReload) img.style.opacity = '0';
 
   let retries = item.__thumbRetry || 0;
@@ -4237,7 +4494,7 @@ function startThumbLoad(item) {
     const baseSrc = candidateUrls[candidateIndex] || src;
     const targetSrc = retries > 0 ? addRetryBuster(baseSrc, retries) : baseSrc;
     if (img.dataset) img.dataset.src = baseSrc;
-    scheduleOverlayShow(item, overlay, getOverlayDelay());
+    scheduleOverlayShow(item, card, getOverlayDelay());
     img.onload = function() {
       if (done) return;
       if (!item.__thumbCtx || item.__thumbCtx.token !== token) {
@@ -4607,7 +4864,6 @@ function createCard(item) {
   });
 
   card.appendChild(thumb);
-  if (needsThumbOverlay) showThumbOverlay(card, 'LOADING');
   card.appendChild(meta);
   const dup = document.createElement('div');
   dup.className = 'dup-badge';
@@ -4688,7 +4944,8 @@ function updateCard(item) {
     item.__thumbLoaded = false;
     item.__thumbLoading = false;
     item.__thumbRetry = 0;
-    showThumbOverlay(item.card, 'LOADING');
+    clearOverlayShowTimer(item);
+    hideThumbOverlay(item.card);
     thumbEnqueue(item);
   }
   const page = item.card.querySelector('.chip-page');
