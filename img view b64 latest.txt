@@ -284,9 +284,15 @@ javascript:(function(){
 /* rev1.101.15:
  * add lightweight runtime/status marker and DOM active attr for shortcut chain; cleanup removes globals/attr
   */
+/* rev1.101.16:
+ * smooth grid scroll thumbnail reveal by widening IO prefetch margin, shortening scroll pause, and allowing 3 in-flight thumbs on iPhone while scrolling
+  */
+/* rev1.101.17:
+ * make scroll-time thumb concurrency effective on large iPhone lists by using scrollMax while scrolling; keep big-list throttle for non-scroll
+  */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101.15';
+const SCRIPT_REV = '1.101.17';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -757,10 +763,10 @@ function initCfg() {
     thumbConcurrentIphone: 3,
     thumbConcurrentIpad: 4,
     thumbRootMarginPx: 900,
-    thumbIoRootMarginPx: 140,
-    thumbScrollPauseMs: 140,
-    thumbScrollResumeMs: 160,
-    thumbScrollEndScanMs: 220,
+    thumbIoRootMarginPx: 420,
+    thumbScrollPauseMs: 60,
+    thumbScrollResumeMs: 80,
+    thumbScrollEndScanMs: 120,
     thumbTimeoutMs: 20000,
     thumbRetryMax: 0,
     thumbRetryDelayMs: 350,
@@ -3626,11 +3632,9 @@ function getThumbMaxConcurrent() {
 }
 
 function getThumbMaxConcurrentWhileScroll() {
-  if (state.env && state.env.isIPhone) {
-    return 2;
-  }
-  if (state.env && state.env.isIPad) return 2;
-  return 3;
+  if (state.env && state.env.isIPhone) return 3;
+  if (state.env && state.env.isIPad) return 3;
+  return 4;
 }
 
 function shouldSkipThumbDecode() {
@@ -3644,7 +3648,7 @@ function getAdaptiveThumbRootMarginPx() {
   const base = state.cfg.thumbRootMarginPx || 0;
   const count = state.items && state.items.list ? state.items.list.length : 0;
   if (state.env && state.env.isIPhone) {
-    if (count >= 320) return 300;
+    if (count >= 320) return 420;
     if (count >= 180) return 450;
     return base;
   }
@@ -3960,7 +3964,7 @@ function thumbPump() {
   let max = baseMax;
   if (state.thumb.pausedByScroll) {
     const scrollMax = getThumbMaxConcurrentWhileScroll();
-    max = max ? Math.min(max, scrollMax) : scrollMax;
+    max = scrollMax || max;
   }
   state.thumb.max = max;
   if (state.env && state.env.isIPhone) {
@@ -3992,7 +3996,7 @@ function thumbPump() {
     if (!grid || typeof grid.getBoundingClientRect !== 'function') return;
     gridRect = grid.getBoundingClientRect();
   }
-  const probeLimit = 24;
+  const probeLimit = 36;
   for (let i = 0; i < probeLimit && state.thumb.inFlight < max && thumbQueueLength(); i++) {
     const item = popThumbQueue();
     if (!item) continue;
@@ -4094,7 +4098,7 @@ function startThumbLoad(item) {
   const getOverlayDelay = function() {
     const shownSrc = (img.currentSrc || img.src || '');
     const visible = img.style.opacity !== '0' && shownSrc && !isSameLoadedSrc(shownSrc, BLANK_GIF);
-    return visible ? 260 : 120;
+    return visible ? 300 : 180;
   };
   const shownSrc = (img.currentSrc || img.src || '');
   const keepVisibleOnReload = !!(
