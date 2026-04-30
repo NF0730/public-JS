@@ -311,9 +311,12 @@ javascript:(function(){
 /* rev1.101.24:
  * cleanup old root DOM timers/handlers before removing previous root on restart
   */
+/* rev1.101.25:
+ * preload previous/next Lightbox image only via detached Image objects; no DOM/UI/CSS change
+  */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101.24';
+const SCRIPT_REV = '1.101.25';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -378,7 +381,9 @@ const state = {
     media: null,
     caption: null,
     openBtn: null,
-    badge: null
+    badge: null,
+    __preloadCtxs: [],
+    __preloadKey: ''
   },
   thumb: {
     observer: null,
@@ -5141,6 +5146,9 @@ function resetLightboxLoad(reason) {
   if (ctx && typeof ctx.abort === 'function') {
     try { ctx.abort(reason || 'reset'); } catch (e) {}
   }
+  try {
+    cleanupLightboxPreloads(reason || 'reset');
+  } catch (e) {}
   if (state.lb) {
     state.lb.__ctx = null;
     state.lb.__loading = false;
@@ -5152,6 +5160,103 @@ function resetLightboxLoad(reason) {
 
 function isLightboxTokenCurrent(token) {
   return !!(state.lb && token && state.lb.__token === token);
+}
+
+function cleanupLightboxPreloads(reason) {
+  try {
+    const list = state.lb && state.lb.__preloadCtxs ? state.lb.__preloadCtxs : [];
+    if (list && list.length) {
+      list.forEach(function(ctx) {
+        if (!ctx) return;
+        ctx.aborted = true;
+        try {
+          if (ctx.img) {
+            ctx.img.onload = null;
+            ctx.img.onerror = null;
+            try { ctx.img.removeAttribute('src'); } catch (e2) {}
+          }
+        } catch (e) {}
+      });
+    }
+  } catch (e) {}
+  try {
+    if (state.lb) {
+      state.lb.__preloadCtxs = [];
+      state.lb.__preloadKey = '';
+    }
+  } catch (e) {}
+}
+
+function getLightboxNeighborIndex(dir) {
+  const list = state.lb && state.lb.list ? state.lb.list : [];
+  if (!list.length) return -1;
+  if (state.lb.index < 0) return -1;
+  if (list.length < 2) return -1;
+  let idx = state.lb.index + dir;
+  if (idx < 0) idx = list.length - 1;
+  if (idx >= list.length) idx = 0;
+  if (idx === state.lb.index) return -1;
+  return idx;
+}
+
+function getLightboxPreloadUrl(item) {
+  if (!item) return '';
+  if (item.kind !== 'img') return '';
+  const url = getDisplayUrl(item) || item.openUrl || item.url || '';
+  if (!url) return '';
+  if (isSameLoadedSrc(url, BLANK_GIF)) return '';
+  return url;
+}
+
+function startLightboxImagePreload(item, dir, token) {
+  const url = getLightboxPreloadUrl(item);
+  if (!url) return null;
+  const img = new Image();
+  const ctx = {
+    img: img,
+    url: url,
+    dir: dir,
+    token: token,
+    done: false,
+    aborted: false
+  };
+
+  img.decoding = 'async';
+  img.onload = function() {
+    ctx.done = true;
+  };
+  img.onerror = function() {
+    ctx.done = true;
+  };
+
+  try { img.src = url; } catch (e) { img.src = url; }
+  return ctx;
+}
+
+function preloadLightboxNeighbors(token) {
+  if (!state.lb) return;
+  const list = state.lb.list || [];
+  if (!list.length) return;
+  if (state.lb.index < 0) return;
+  const key = String(token || 0) + ':' + state.lb.index + ':' + list.length;
+  if (state.lb.__preloadKey === key) return;
+
+  cleanupLightboxPreloads('preload-refresh');
+  state.lb.__preloadKey = key;
+  state.lb.__preloadCtxs = [];
+
+  const seen = new Set();
+  [-1, 1].forEach(function(dir) {
+    const idx = getLightboxNeighborIndex(dir);
+    if (idx < 0) return;
+    const item = list[idx];
+    const url = getLightboxPreloadUrl(item);
+    if (!url) return;
+    if (seen.has(url)) return;
+    seen.add(url);
+    const ctx = startLightboxImagePreload(item, dir, token);
+    if (ctx) state.lb.__preloadCtxs.push(ctx);
+  });
 }
 
 function renderLightboxItem() {
@@ -5596,6 +5701,7 @@ function renderLightboxItem() {
   if (state.lb.openBtn) {
     state.lb.openBtn.style.display = allowOpen(item.openUrl) ? 'inline-flex' : 'none';
   }
+  preloadLightboxNeighbors(lbToken);
 }
 
 function renderVideoPoster(video, item, token) {
