@@ -314,9 +314,15 @@ javascript:(function(){
 /* rev1.101.25:
  * preload previous/next Lightbox image only via detached Image objects; no DOM/UI/CSS change
   */
+/* rev1.101.26:
+ * cache body/avoid selector joins, compact MO partial roots by parent/child relation, and avoid duplicate fallback thumb scans per render flush
+  */
+/* rev1.101.27:
+ * reuse scope/avoid closest checks during extraction and harden preconnect when no head/root is available
+  */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101.25';
+const SCRIPT_REV = '1.101.27';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -1053,6 +1059,8 @@ function initCfg() {
       avoidSelectors: ['nav', 'header', 'footer', 'aside', 'noscript', '.nav', '.footer', '.header', '.share', '.sns', '.social', '.icon', '.logo', '.breadcrumb', '.pager']
     }
   };
+  state.cfg.__articleSelector = state.cfg.siteHints.articleSelectors.join(',');
+  state.cfg.__avoidSelector = state.cfg.siteHints.avoidSelectors.join(',');
   state.filter = { key: 'ALL', opts: {} };
 }
 
@@ -1535,16 +1543,24 @@ function setFilter(key, opts) {
 /* [07] collect */
 function inBodyScope(el) {
   if (!el || !el.closest) return false;
-  const sel = state.cfg.siteHints.articleSelectors.join(',');
+  const sel = state.cfg.__articleSelector || '';
   if (!sel) return false;
   return !!el.closest(sel);
 }
 
 function inAvoidScope(el) {
   if (!el || !el.closest) return false;
-  const sel = state.cfg.siteHints.avoidSelectors.join(',');
+  const sel = state.cfg.__avoidSelector || '';
   if (!sel) return false;
   return !!el.closest(sel);
+}
+
+function getCollectScopeInfo(el, strictBody) {
+  const inBody = inBodyScope(el);
+  return {
+    skip: !!((strictBody && !inBody) || inAvoidScope(el)),
+    scope: inBody ? 'body' : ''
+  };
 }
 
 function getImgSize(img) {
@@ -1880,12 +1896,12 @@ function extractFromDocument(doc, source, baseUrl) {
   const hiddenCache = typeof WeakMap === 'function' ? new WeakMap() : null;
   const imgs = queryAllIncludingRoot(doc, 'img');
   imgs.forEach(function(img) {
-    if (strictBody && !inBodyScope(img)) return;
-    if (inAvoidScope(img)) return;
+    const scopeInfo = getCollectScopeInfo(img, strictBody);
+    if (scopeInfo.skip) return;
     const urls = collectImageUrls(img);
     if (!urls.length) return;
     const size = getImgSize(img);
-    const scope = inBodyScope(img) ? 'body' : '';
+    const scope = scopeInfo.scope;
     const origHidden = isOriginallyHidden(img, hiddenCache);
     urls.forEach(function(u) {
       if (!isImgTagCandidateUrl(u)) return;
@@ -1903,9 +1919,9 @@ function extractFromDocument(doc, source, baseUrl) {
 
   const videos = queryAllIncludingRoot(doc, 'video');
   videos.forEach(function(video) {
-    if (strictBody && !inBodyScope(video)) return;
-    if (inAvoidScope(video)) return;
-    const scope = inBodyScope(video) ? 'body' : '';
+    const scopeInfo = getCollectScopeInfo(video, strictBody);
+    if (scopeInfo.skip) return;
+    const scope = scopeInfo.scope;
     const origHidden = isOriginallyHidden(video, hiddenCache);
     const vsrcs = [];
     if (video.currentSrc) vsrcs.push(video.currentSrc);
@@ -1930,13 +1946,13 @@ function extractFromDocument(doc, source, baseUrl) {
 
   const links = queryAllIncludingRoot(doc, 'a[href]');
   links.forEach(function(a) {
-    if (strictBody && !inBodyScope(a)) return;
-    if (inAvoidScope(a)) return;
+    const scopeInfo = getCollectScopeInfo(a, strictBody);
+    if (scopeInfo.skip) return;
     const href = a.getAttribute('href');
     if (!href || href.startsWith('#')) return;
     const abs = normalizeUrl(href, baseUrl || location.href);
     if (!abs) return;
-    const scope = inBodyScope(a) ? 'body' : '';
+    const scope = scopeInfo.scope;
     const origHidden = isOriginallyHidden(a, hiddenCache);
     const linkImg = a.querySelector ? a.querySelector('img') : null;
     const linkSize = linkImg ? getImgSize(linkImg) : { w: 0, h: 0 };
@@ -2014,15 +2030,15 @@ function extractFromDocument(doc, source, baseUrl) {
 
   const iframes = queryAllIncludingRoot(doc, 'iframe[src]');
   iframes.forEach(function(fr) {
-    if (strictBody && !inBodyScope(fr)) return;
-    if (inAvoidScope(fr)) return;
+    const scopeInfo = getCollectScopeInfo(fr, strictBody);
+    if (scopeInfo.skip) return;
     const src = fr.getAttribute('src');
     if (!src) return;
     const abs = normalizeUrl(src, baseUrl || location.href);
     if (!abs) return;
     const info = getEmbedInfoFromIframe(abs.abs);
     if (!info) return;
-    const scope = inBodyScope(fr) ? 'body' : '';
+    const scope = scopeInfo.scope;
     const origHidden = isOriginallyHidden(fr, hiddenCache);
     const previewText = getEmbedPreviewTextFromElement(fr, [abs.abs, info.openUrl || '', info.embedUrl || '']);
     items.push(makeItem('embed', info.openUrl, {
@@ -2041,11 +2057,11 @@ function extractFromDocument(doc, source, baseUrl) {
 
   const bqs = queryAllIncludingRoot(doc, 'blockquote.imgur-embed-pub[data-id], blockquote[data-id][class*=\"imgur-embed\"]');
   bqs.forEach(function(el) {
-    if (strictBody && !inBodyScope(el)) return;
-    if (inAvoidScope(el)) return;
+    const scopeInfo = getCollectScopeInfo(el, strictBody);
+    if (scopeInfo.skip) return;
     const info = getImgurEmbedFromBlockquote(el);
     if (!info) return;
-    const scope = inBodyScope(el) ? 'body' : '';
+    const scope = scopeInfo.scope;
     const origHidden = isOriginallyHidden(el, hiddenCache);
     const previewText = getEmbedPreviewTextFromElement(el, [info.openUrl || '', info.embedUrl || '']);
     items.push(makeItem('embed', info.openUrl, {
@@ -2096,8 +2112,8 @@ function extractBackgrounds() {
   const hiddenCache = typeof WeakMap === 'function' ? new WeakMap() : null;
   const nodes = Array.from(document.querySelectorAll(selector)).slice(0, state.cfg.maxBgChecks);
   nodes.forEach(function(node) {
-    if (state.cfg.strictBodyOnly && !inBodyScope(node)) return;
-    if (inAvoidScope(node)) return;
+    const scopeInfo = getCollectScopeInfo(node, !!state.cfg.strictBodyOnly);
+    if (scopeInfo.skip) return;
     const rect = node.getBoundingClientRect ? node.getBoundingClientRect() : { width: 0, height: 0 };
     if (rect.width * rect.height < state.cfg.minArea) return;
     const urls = [];
@@ -2110,7 +2126,7 @@ function extractBackgrounds() {
       const style = getComputedStyle(node);
       urls.push.apply(urls, parseCssUrls(style.backgroundImage));
     } catch (e) {}
-    const scope = inBodyScope(node) ? 'body' : '';
+    const scope = scopeInfo.scope;
     const origHidden = isOriginallyHidden(node, hiddenCache);
     uniq(urls).forEach(function(u) {
       if (!isImageUrl(u)) return;
@@ -6268,15 +6284,17 @@ function flushRender() {
   }
   compactRenderQueue();
   state.ui.grid.appendChild(frag);
+  let scanRequested = false;
   if (newCards.length) {
     newCards.forEach(function(card) { observeThumbCard(card); });
     if (state.thumb && !state.thumb.observer && typeof state.thumb.scanNow === 'function') {
       state.thumb.scanNow();
+      scanRequested = true;
     }
   }
   updateProgress('thumb', state.items.list.length);
   scheduleApplyFilterSort('render');
-  if (state.thumb && !state.thumb.observer && typeof state.thumb.scanNow === 'function') {
+  if (!scanRequested && state.thumb && !state.thumb.observer && typeof state.thumb.scanNow === 'function') {
     state.thumb.scanNow();
   }
   const now = Date.now();
@@ -6297,6 +6315,7 @@ function flushRender() {
 
 function preconnect() {
   const head = document.head || document.documentElement;
+  if (!head || !head.querySelector || !head.appendChild) return;
   state.cfg.preconnectHosts.forEach(function(host) {
     if (!host) return;
     const existing = head.querySelector('link[rel="preconnect"][href="' + host + '"]');
@@ -7049,7 +7068,38 @@ function queueDomRescanRoot(root) {
   if (!state.mo || !root || root.nodeType !== 1) return;
   if (state.mo.full) return;
   const maxRoots = state.cfg.moMaxRoots || 24;
-  if (!state.mo.rootSet && typeof WeakSet === 'function') state.mo.rootSet = new WeakSet();
+  const roots = state.mo.roots || [];
+  for (let i = 0; i < roots.length; i += 1) {
+    const queued = roots[i];
+    if (!queued || queued.isConnected === false) continue;
+    if (queued === root) return;
+    try {
+      if (queued.contains && queued.contains(root)) return;
+    } catch (e) {}
+  }
+  const nextRoots = [];
+  let removedDescendant = false;
+  for (let i = 0; i < roots.length; i += 1) {
+    const queued = roots[i];
+    if (!queued || queued.isConnected === false) continue;
+    try {
+      if (root.contains && root.contains(queued)) {
+        removedDescendant = true;
+        continue;
+      }
+    } catch (e) {}
+    nextRoots.push(queued);
+  }
+  if (removedDescendant) {
+    state.mo.roots = nextRoots;
+    state.mo.rootSet = null;
+  }
+  if (!state.mo.rootSet && typeof WeakSet === 'function') {
+    state.mo.rootSet = new WeakSet();
+    for (let i = 0; i < state.mo.roots.length; i += 1) {
+      try { state.mo.rootSet.add(state.mo.roots[i]); } catch (e) {}
+    }
+  }
   if (state.mo.rootSet) {
     if (state.mo.rootSet.has(root)) return;
     state.mo.rootSet.add(root);
@@ -7061,6 +7111,38 @@ function queueDomRescanRoot(root) {
     return;
   }
   state.mo.roots.push(root);
+}
+
+function compactDomRescanRoots(roots) {
+  if (!roots || !roots.length) return [];
+  const out = [];
+  for (let i = 0; i < roots.length; i += 1) {
+    const root = roots[i];
+    if (!root || root.nodeType !== 1 || root.isConnected === false) continue;
+    let covered = false;
+    for (let j = 0; j < out.length; j += 1) {
+      const queued = out[j];
+      if (queued === root) {
+        covered = true;
+        break;
+      }
+      try {
+        if (queued && queued.contains && queued.contains(root)) {
+          covered = true;
+          break;
+        }
+      } catch (e) {}
+    }
+    if (covered) continue;
+    for (let j = out.length - 1; j >= 0; j -= 1) {
+      const queued = out[j];
+      try {
+        if (root.contains && root.contains(queued)) out.splice(j, 1);
+      } catch (e) {}
+    }
+    out.push(root);
+  }
+  return out;
 }
 
 function scheduleDomRescan(reason, root) {
@@ -7100,7 +7182,7 @@ function scheduleDomRescan(reason, root) {
 function runDomRescanOnce(reason) {
   if (state.abort && state.abort.aborted) return;
   const before = state.items.list.length;
-  const roots = (!state.mo.full && state.mo.roots && state.mo.roots.length) ? state.mo.roots.slice() : null;
+  const roots = (!state.mo.full && state.mo.roots && state.mo.roots.length) ? compactDomRescanRoots(state.mo.roots) : null;
   state.mo.roots = [];
   state.mo.rootSet = null;
   state.mo.full = false;
