@@ -319,10 +319,13 @@ javascript:(function(){
   */
 /* rev1.101.27:
  * reuse scope/avoid closest checks during extraction and harden preconnect when no head/root is available
-  */
+ */
+/* rev1.101.28:
+ * reduce extraction/MO overhead by looping NodeLists directly, caching scope checks per extraction, and ignoring self UI mutations
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101.27';
+const SCRIPT_REV = '1.101.28';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -1882,9 +1885,8 @@ function queryAllIncludingRoot(root, selector) {
   } catch (e) {}
   try {
     if (root.querySelectorAll) {
-      Array.from(root.querySelectorAll(selector)).forEach(function(el) {
-        out.push(el);
-      });
+      const list = root.querySelectorAll(selector);
+      for (let i = 0; i < list.length; i += 1) out.push(list[i]);
     }
   } catch (e) {}
   return out;
@@ -1894,9 +1896,32 @@ function extractFromDocument(doc, source, baseUrl) {
   const items = [];
   const strictBody = !!state.cfg.strictBodyOnly;
   const hiddenCache = typeof WeakMap === 'function' ? new WeakMap() : null;
+  const bodyScopeCache = typeof WeakMap === 'function' ? new WeakMap() : null;
+  const avoidScopeCache = typeof WeakMap === 'function' ? new WeakMap() : null;
+  const getScopedInfo = function(el) {
+    if (!el || el.nodeType !== 1) return { skip: true, scope: '' };
+    let inBody = false;
+    let inAvoid = false;
+    if (bodyScopeCache && bodyScopeCache.has(el)) {
+      inBody = !!bodyScopeCache.get(el);
+    } else {
+      inBody = inBodyScope(el);
+      if (bodyScopeCache) bodyScopeCache.set(el, inBody);
+    }
+    if (avoidScopeCache && avoidScopeCache.has(el)) {
+      inAvoid = !!avoidScopeCache.get(el);
+    } else {
+      inAvoid = inAvoidScope(el);
+      if (avoidScopeCache) avoidScopeCache.set(el, inAvoid);
+    }
+    return {
+      skip: !!((strictBody && !inBody) || inAvoid),
+      scope: inBody ? 'body' : ''
+    };
+  };
   const imgs = queryAllIncludingRoot(doc, 'img');
   imgs.forEach(function(img) {
-    const scopeInfo = getCollectScopeInfo(img, strictBody);
+    const scopeInfo = getScopedInfo(img);
     if (scopeInfo.skip) return;
     const urls = collectImageUrls(img);
     if (!urls.length) return;
@@ -1919,7 +1944,7 @@ function extractFromDocument(doc, source, baseUrl) {
 
   const videos = queryAllIncludingRoot(doc, 'video');
   videos.forEach(function(video) {
-    const scopeInfo = getCollectScopeInfo(video, strictBody);
+    const scopeInfo = getScopedInfo(video);
     if (scopeInfo.skip) return;
     const scope = scopeInfo.scope;
     const origHidden = isOriginallyHidden(video, hiddenCache);
@@ -1946,7 +1971,7 @@ function extractFromDocument(doc, source, baseUrl) {
 
   const links = queryAllIncludingRoot(doc, 'a[href]');
   links.forEach(function(a) {
-    const scopeInfo = getCollectScopeInfo(a, strictBody);
+    const scopeInfo = getScopedInfo(a);
     if (scopeInfo.skip) return;
     const href = a.getAttribute('href');
     if (!href || href.startsWith('#')) return;
@@ -2030,7 +2055,7 @@ function extractFromDocument(doc, source, baseUrl) {
 
   const iframes = queryAllIncludingRoot(doc, 'iframe[src]');
   iframes.forEach(function(fr) {
-    const scopeInfo = getCollectScopeInfo(fr, strictBody);
+    const scopeInfo = getScopedInfo(fr);
     if (scopeInfo.skip) return;
     const src = fr.getAttribute('src');
     if (!src) return;
@@ -2057,7 +2082,7 @@ function extractFromDocument(doc, source, baseUrl) {
 
   const bqs = queryAllIncludingRoot(doc, 'blockquote.imgur-embed-pub[data-id], blockquote[data-id][class*=\"imgur-embed\"]');
   bqs.forEach(function(el) {
-    const scopeInfo = getCollectScopeInfo(el, strictBody);
+    const scopeInfo = getScopedInfo(el);
     if (scopeInfo.skip) return;
     const info = getImgurEmbedFromBlockquote(el);
     if (!info) return;
@@ -7217,8 +7242,18 @@ function setupMutationObserver() {
     if (t === 'IFRAME' || t === 'BLOCKQUOTE') return 'added-embed';
     return '';
   };
+  const isSelfMutationNode = function(node) {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      if (node.id === ROOT_ID) return true;
+      if (node.classList && (node.classList.contains('card') || node.classList.contains('thumb') || node.classList.contains('lightbox'))) return true;
+      if (node.closest && node.closest('#' + ROOT_ID + ',.card,.lightbox')) return true;
+    } catch (e) {}
+    return false;
+  };
   const findReasonFromNode = function(node) {
     if (!node || node.nodeType !== 1) return '';
+    if (isSelfMutationNode(node)) return '';
     const direct = reasonFromTag(node.tagName);
     if (direct) return direct;
     if (!node.querySelector || !node.childElementCount) return '';
@@ -7254,6 +7289,7 @@ function setupMutationObserver() {
           const name = m.attributeName || '';
           const t = m.target;
           if (t && t.nodeType === 1) {
+            if (isSelfMutationNode(t)) continue;
             const tr = reasonFromTag(t.tagName);
             if (tr && name) {
               reason = 'attr-' + name;
