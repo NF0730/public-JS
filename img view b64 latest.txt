@@ -323,9 +323,12 @@ javascript:(function(){
 /* rev1.101.28:
  * reduce extraction/MO overhead by looping NodeLists directly, caching scope checks per extraction, and ignoring self UI mutations
  */
+/* rev1.101.29:
+ * cache visibility stats, cap video poster canvas size, skip unchanged MO attributes, and limit scroll-time thumb requeue churn
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101.28';
+const SCRIPT_REV = '1.101.29';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -374,6 +377,9 @@ const state = {
     infoThrottleTimer: 0,
     infoPendingText: '',
     __infoDirty: false,
+    visibilityStats: null,
+    visibilityStatsDirty: true,
+    visibilityStatsLimit: 0,
     lastAllTap: 0,
     boundVis: false,
     onVisibilityChange: null,
@@ -1499,6 +1505,7 @@ function passesFilter(item) {
 
 function applyFilterSort() {
   if (!state.ui.grid) return;
+  invalidateVisibilityStats('filter-sort');
   const list = state.items.list;
   list.forEach(function(it) {
     const hideNoise = state.cfg.noiseHide && it.__isNoise;
@@ -2487,12 +2494,15 @@ function adoptItem(item) {
 
 function addItems(list) {
   if (!list || !list.length) return;
+  let changed = false;
   list.forEach(function(item) {
     const adopted = adoptItem(item);
     if (adopted && !adopted.card) {
+      changed = true;
       queueRender(adopted);
     }
   });
+  if (changed) invalidateVisibilityStats('add-items');
 }
 
 /* [09] crawl */
@@ -4301,6 +4311,8 @@ function thumbPump() {
     gridRect = grid.getBoundingClientRect();
   }
   const probeLimit = 36;
+  let requeued = 0;
+  const requeueLimit = Math.max(6, Math.min(probeLimit, (max || 1) * 6));
   for (let i = 0; i < probeLimit && state.thumb.inFlight < max && thumbQueueLength(); i++) {
     const item = popThumbQueue();
     if (!item) continue;
@@ -4317,10 +4329,14 @@ function thumbPump() {
     if (hasIO) {
       if (!item.__thumbInView) {
         requeueThumbItem(item);
+        requeued += 1;
+        if (requeued >= requeueLimit) break;
         continue;
       }
     } else if (!isCardInGridView(item.card, gridRect)) {
       requeueThumbItem(item);
+      requeued += 1;
+      if (requeued >= requeueLimit) break;
       continue;
     }
     state.thumb.queued.delete(item.id);
@@ -4483,6 +4499,7 @@ function startThumbLoad(item) {
     clearOverlayShowTimer(item);
     state.items.errorCount += 1;
     item.__failed = true;
+    invalidateVisibilityStats('thumb-fail');
     try {
       if (state.thumb && state.thumb.observer) {
         try { state.thumb.observer.unobserve(card); } catch (e) {}
@@ -5772,8 +5789,13 @@ function renderVideoPoster(video, item, token) {
       return;
     }
     try {
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 360;
+      const srcW = video.videoWidth || 640;
+      const srcH = video.videoHeight || 360;
+      const maxW = state.cfg.videoPosterMaxW || 960;
+      const maxH = state.cfg.videoPosterMaxH || 540;
+      const scale = Math.min(1, maxW / Math.max(1, srcW), maxH / Math.max(1, srcH));
+      canvas.width = Math.max(1, Math.round(srcW * scale));
+      canvas.height = Math.max(1, Math.round(srcH * scale));
       const ctx = canvas.getContext('2d');
       if (!ctx) {
         fail();
@@ -6458,6 +6480,11 @@ function formatItemMetaText(item) {
 }
 
 function collectVisibilityStats(limitHidden) {
+  const limit = Math.max(0, limitHidden || 0);
+  if (state.ui && !state.ui.visibilityStatsDirty && state.ui.visibilityStats) {
+    const cachedLimit = state.ui.visibilityStatsLimit || 0;
+    if (!limit || cachedLimit >= limit) return state.ui.visibilityStats;
+  }
   const counts = Object.create(null);
   const hidden = [];
   let visible = 0;
@@ -6469,11 +6496,24 @@ function collectVisibilityStats(limitHidden) {
       return;
     }
     counts[reason] = (counts[reason] || 0) + 1;
-    if (limitHidden && hidden.length < limitHidden) {
+    if (limit && hidden.length < limit) {
       hidden.push({ item: it, reason: reason });
     }
   });
-  return { visible: visible, counts: counts, hidden: hidden };
+  const stats = { visible: visible, counts: counts, hidden: hidden };
+  if (state.ui) {
+    state.ui.visibilityStats = stats;
+    state.ui.visibilityStatsDirty = false;
+    state.ui.visibilityStatsLimit = limit;
+  }
+  return stats;
+}
+
+function invalidateVisibilityStats(reason) {
+  if (!state.ui) return;
+  state.ui.visibilityStatsDirty = true;
+  state.ui.visibilityStats = null;
+  state.ui.visibilityStatsLimit = 0;
 }
 
 function formatHideReasonCounts(counts, maxEntries) {
@@ -7289,6 +7329,11 @@ function setupMutationObserver() {
           const name = m.attributeName || '';
           const t = m.target;
           if (t && t.nodeType === 1) {
+            if (name && t.getAttribute) {
+              const oldValue = m.oldValue == null ? '' : String(m.oldValue);
+              const newValue = String(t.getAttribute(name) || '');
+              if (oldValue === newValue) continue;
+            }
             if (isSelfMutationNode(t)) continue;
             const tr = reasonFromTag(t.tagName);
             if (tr && name) {
@@ -7305,7 +7350,8 @@ function setupMutationObserver() {
       childList: true,
       subtree: true,
       attributes: !!state.cfg.moObserveAttributes,
-      attributeFilter: state.cfg.moAttrFilter || undefined
+      attributeFilter: state.cfg.moAttrFilter || undefined,
+      attributeOldValue: !!state.cfg.moObserveAttributes
     });
   } catch (e) {
     state.mo.obs = null;
