@@ -326,14 +326,57 @@ javascript:(function(){
 /* rev1.101.29:
  * cache visibility stats, cap video poster canvas size, skip unchanged MO attributes, and limit scroll-time thumb requeue churn
  */
+/* rev2.0.0:
+ * add opt-in lightweight performance counters/timestamps for staged baseline measurement without changing runtime behavior
+ */
+/* rev2.0.1:
+ * coalesce relevant MutationObserver roots behind an opt-in flag while preserving the legacy callback path when disabled
+ */
+/* rev2.0.2:
+ * make the IO-enabled scroll pump priority-only behind an opt-in flag while preserving no-IO and non-scroll behavior
+ */
+/* rev2.0.3:
+ * collect an opt-in crawl bootstrap snapshot for comparison without changing crawl seed or request behavior
+ */
+/* rev2.0.4:
+ * reuse the opt-in crawl bootstrap snapshot in startCrawl while preserving the fallback rescan path
+ */
+/* rev2.0.5:
+ * measure source element retention and connected/detached state without releasing source elements
+ */
+/* rev2.0.6:
+ * release source elements only after the dependent scoring, thumbnail, or card lifecycle is complete
+ */
+/* rev2.0.7:
+ * scope dark theme tokens to the FMP shell and preserve the existing palette while declaring dark color-scheme
+ */
+/* rev2.0.8:
+ * move safe static theme presentation into scoped D2 classes while preserving runtime inline state paths
+ */
+/* rev2.1.0:
+ * add an independent dark color-scheme declaration for the self-owned fallback video document while preserving embed boundaries
+ */
+/* rev2.1.1:
+ * isolate the Light DOM fallback stylesheet to the FMP shell without changing declarations or Shadow DOM behavior
+ */
+/* rev2.1.2:
+ * add a measured Light DOM root-ID selector branch for F4/F5 inbound cascade hardening while preserving D5A, Shadow DOM, and declarations
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '1.101.29';
+const SCRIPT_REV = '2.1.2';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
   cfg: {},
   env: {},
+  perf: {
+    enabled: false,
+    counts: Object.create(null),
+    marks: Object.create(null),
+    durations: Object.create(null),
+    gauges: Object.create(null)
+  },
   abort: { reason: null, controllers: new Set(), aborted: false },
   log: { ring: [], max: 200 },
   items: {
@@ -411,6 +454,7 @@ const state = {
     paused: false,
     pausedByScroll: false,
     scrollPauseUntil: 0,
+    scrollPriorityRescueUsed: false,
     scrollResumeTimer: 0,
     scrollEndScanTimer: 0,
     pumpScheduled: false,
@@ -458,7 +502,8 @@ const state = {
     stop: false,
     started: false,
     done: false,
-    timer: 0
+    timer: 0,
+    bootstrap: null
   }
 };
 
@@ -481,6 +526,7 @@ const DEBUG_GLOBAL_KEYS = [
   '__FMP_SET_FILTER__',
   '__FMP_APPLY_FILTER_SORT__',
   '__FMP_APPLY_ERROR_VIS__',
+  '__FMP_PERF__',
   '__FMP_LB_OPEN__'
 ];
 
@@ -489,6 +535,118 @@ function clearDebugGlobals() {
     try { window[key] = null; } catch (e) {}
     try { delete window[key]; } catch (e) {}
   });
+}
+
+function perfEnabled() {
+  return !!(state && state.perf && state.perf.enabled && state.cfg && state.cfg.perfEnabled);
+}
+
+function perfNow() {
+  try {
+    if (typeof performance !== 'undefined' && performance && typeof performance.now === 'function') {
+      return performance.now();
+    }
+  } catch (e) {}
+  return Date.now();
+}
+
+function perfCount(name, amount) {
+  if (!perfEnabled()) return;
+  const key = String(name || '');
+  if (!key) return;
+  const n = Number(amount);
+  const delta = typeof n === 'number' && isFinite(n) ? n : 1;
+  state.perf.counts[key] = (state.perf.counts[key] || 0) + delta;
+}
+
+function perfMeasureSourceEl(item) {
+  if (!perfEnabled() || !item || !item.__sourceEl) return;
+  if (!item.__sourceElMetricRetained) {
+    item.__sourceElMetricRetained = true;
+    perfCount('sourceElRetained');
+  }
+  let status = 'connected';
+  try {
+    if (item.__sourceEl.isConnected === false) status = 'detached';
+  } catch (e) {}
+  if (item.__sourceElMetricStatus === status) return;
+  item.__sourceElMetricStatus = status;
+  perfCount(status === 'connected' ? 'sourceElConnected' : 'sourceElDetached');
+}
+
+function releaseSourceEl(item, reason) {
+  if (!state.cfg.releaseSourceEl || !item || !item.__sourceEl) return;
+  item.__sourceEl = null;
+  item.__sourceElMetricStatus = '';
+  perfCount('sourceElReleased');
+}
+
+function perfMark(name) {
+  if (!perfEnabled()) return;
+  const key = String(name || '');
+  if (!key) return;
+  state.perf.marks[key] = perfNow();
+}
+
+function perfMarkOnce(name) {
+  if (!perfEnabled()) return;
+  const key = String(name || '');
+  if (!key || Object.prototype.hasOwnProperty.call(state.perf.marks, key)) return;
+  state.perf.marks[key] = perfNow();
+}
+
+function perfDuration(name, start) {
+  if (!perfEnabled() || typeof start !== 'number') return;
+  const key = String(name || '');
+  if (!key) return;
+  const elapsed = Math.max(0, perfNow() - start);
+  state.perf.durations[key] = (state.perf.durations[key] || 0) + elapsed;
+}
+
+function perfStart(name) {
+  if (!perfEnabled()) return null;
+  perfCount(name + '.start');
+  perfMark(name + '.start');
+  return perfNow();
+}
+
+function perfEnd(name, start) {
+  if (!perfEnabled() || typeof start !== 'number') return;
+  perfCount(name + '.end');
+  perfMark(name + '.end');
+  perfDuration(name, start);
+}
+
+function perfGauge(name, value) {
+  if (!perfEnabled()) return;
+  const key = String(name || '');
+  if (!key) return;
+  state.perf.gauges[key] = value;
+}
+
+function getPerfSnapshot() {
+  if (!perfEnabled()) return null;
+  const gauges = Object.assign({}, state.perf.gauges);
+  gauges.activeCtx = {
+    thumb: state.thumb && state.thumb.inFlight ? state.thumb.inFlight : 0,
+    crawl: state.crawl && state.crawl.inFlight ? state.crawl.inFlight : 0,
+    lightbox: state.lb && state.lb.__ctx ? 1 : 0
+  };
+  gauges.queue = {
+    thumb: typeof thumbQueueLength === 'function' ? thumbQueueLength() : 0,
+    crawl: typeof crawlQueueLength === 'function' ? crawlQueueLength() : 0
+  };
+  gauges.inFlight = {
+    thumb: state.thumb && state.thumb.inFlight ? state.thumb.inFlight : 0,
+    crawl: state.crawl && state.crawl.inFlight ? state.crawl.inFlight : 0
+  };
+  return {
+    enabled: true,
+    counts: Object.assign({}, state.perf.counts),
+    marks: Object.assign({}, state.perf.marks),
+    durations: Object.assign({}, state.perf.durations),
+    gauges: gauges
+  };
 }
 
 function setActiveMarker(active) {
@@ -505,7 +663,7 @@ function getRuntimeStats() {
   const items = state && state.items ? state.items : {};
   const thumb = state && state.thumb ? state.thumb : {};
   const lb = state && state.lb ? state.lb : {};
-  return {
+  const stats = {
     name: SCRIPT_NAME,
     rev: SCRIPT_REV,
     active: !!document.getElementById(ROOT_ID),
@@ -523,6 +681,8 @@ function getRuntimeStats() {
     thumbInFlight: thumb.inFlight || 0,
     lightboxOpen: !!lb.open
   };
+  if (perfEnabled()) stats.perf = getPerfSnapshot();
+  return stats;
 }
 
 function publishRuntime() {
@@ -558,6 +718,7 @@ function publishDebugGlobals() {
   window.__FMP_SET_FILTER__ = setFilter;
   window.__FMP_APPLY_FILTER_SORT__ = applyFilterSort;
   window.__FMP_APPLY_ERROR_VIS__ = applyErrorVis;
+  if (perfEnabled()) window.__FMP_PERF__ = state.perf;
   window.__FMP_LB_OPEN__ = function(idOrIndex) {
     if (typeof idOrIndex === 'number') {
       buildLightboxList();
@@ -616,6 +777,7 @@ function cleanupActiveThumbLoads(reason) {
         item.__thumbCtx = null;
         item.__thumbLoading = false;
         item.__thumbQueuedPri = 0;
+        releaseSourceEl(item, why);
       });
     }
   } catch (e) {}
@@ -762,6 +924,8 @@ function cleanupExternalRootDom(root, reason) {
 }
 
 function cleanupUi() {
+  const cleanupStartedAt = perfStart('cleanup');
+  perfCount('cleanup.begin');
   disconnectMutationObserver();
   stopWatchdog();
   cleanupLightboxLoad('cleanup-ui');
@@ -787,6 +951,7 @@ function cleanupUi() {
     }
     state.thumb.pausedByScroll = false;
     state.thumb.scrollPauseUntil = 0;
+    state.thumb.scrollPriorityRescueUsed = false;
     if (state.thumb.repaintRaf) {
       cancelAnimationFrame(state.thumb.repaintRaf);
       state.thumb.repaintRaf = 0;
@@ -846,6 +1011,8 @@ function cleanupUi() {
   }
   state.ui.root = null;
   setActiveMarker(false);
+  perfMarkOnce('cleanup.end');
+  perfEnd('cleanup', cleanupStartedAt);
   clearDebugGlobals();
 }
 
@@ -1010,6 +1177,7 @@ function initCfg() {
     thumbScrollPauseMs: 60,
     thumbScrollResumeMs: 80,
     thumbScrollEndScanMs: 120,
+    thumbScrollPriorityOnly: false,
     thumbTimeoutMs: 20000,
     thumbRetryMax: 0,
     thumbRetryDelayMs: 350,
@@ -1019,6 +1187,7 @@ function initCfg() {
     moDebounceMs: 250,
     moCooldownMs: 800,
     moMaxMutations: 80,
+    moBatchRoots: false,
     moObserveAttributes: true,
     moAttrFilter: ['src','srcset','data-src','data-srcset','href','style','class'],
     wdEnabled: true,
@@ -1039,6 +1208,9 @@ function initCfg() {
     crawlPreferSameOriginOnly: true,
     sameSiteAllowHosts: [],
     crawlArticleMaxPages: 30,
+    crawlBootstrapCollect: false,
+    crawlBootstrapReuse: false,
+    releaseSourceEl: false,
     progressStaleMs: 1500,
     embedHeight: 360,
     strictBodyOnly: true,
@@ -1051,6 +1223,10 @@ function initCfg() {
     thumbSmallMaxH: 100,
     noiseHide: true,
     hiddenHide: true,
+    dmThemeTokensEnabled: true,
+    dmClassStylesEnabled: true,
+    dmEmbedSurfaceEnabled: true,
+    perfEnabled: false,
     debug: false,
     preconnectHosts: [
       'https://i.imgur.com',
@@ -1070,6 +1246,10 @@ function initCfg() {
   };
   state.cfg.__articleSelector = state.cfg.siteHints.articleSelectors.join(',');
   state.cfg.__avoidSelector = state.cfg.siteHints.avoidSelectors.join(',');
+  state.perf.enabled = !!state.cfg.perfEnabled;
+  ['sourceElRetained', 'sourceElConnected', 'sourceElDetached', 'sourceElReleased'].forEach(function(key) {
+    state.perf.counts[key] = 0;
+  });
   state.filter = { key: 'ALL', opts: {} };
 }
 
@@ -1153,6 +1333,7 @@ function abortAll(reason) {
   if (state.abort.aborted) return;
   state.abort.aborted = true;
   state.abort.reason = reason || 'abort';
+  perfCount('abort');
   disconnectMutationObserver();
   stopWatchdog();
   state.crawl.stop = true;
@@ -2226,9 +2407,12 @@ function extractFromHtmlString() {
 }
 
 async function collectInitial() {
+  const collectStartedAt = perfStart('collect');
+  perfCount('collect');
   updateProgress('scan', 'dom');
   const beforeDom = state.items.list.length;
   addItems(extractFromDocument(document, 'dom', location.href));
+  perfCount('collect.dom.items', state.items.list.length - beforeDom);
   state.log.push('collect', 'dom +' + (state.items.list.length - beforeDom) + ' total=' + state.items.list.length);
 
   if (state.items.list.length < state.cfg.bgMinItems) {
@@ -2236,6 +2420,7 @@ async function collectInitial() {
     updateProgress('scan', 'lazy');
     const beforeLazy = state.items.list.length;
     addItems(extractFromDocument(document, 'lazy', location.href));
+    perfCount('collect.lazy.items', state.items.list.length - beforeLazy);
     state.log.push('collect', 'lazy +' + (state.items.list.length - beforeLazy) + ' total=' + state.items.list.length);
   }
 
@@ -2243,9 +2428,11 @@ async function collectInitial() {
     updateProgress('scan', 'bg');
     const beforeBg = state.items.list.length;
     addItems(extractBackgrounds());
+    perfCount('collect.bg.items', state.items.list.length - beforeBg);
     state.log.push('collect', 'bg +' + (state.items.list.length - beforeBg) + ' total=' + state.items.list.length);
   }
   state.log.push('collect', 'script/html scans DISABLED (body-only strict)');
+  perfEnd('collect', collectStartedAt);
 }
 
 /* [08] dedup/groupBest */
@@ -2294,6 +2481,7 @@ function makeItem(kind, url, meta, baseUrl) {
   if (item.url) item.__dupClusterUrls.push(item.url);
   item.dupCount = 1;
   item.score = scoreItem(item);
+  perfMeasureSourceEl(item);
   return item;
 }
 
@@ -2605,10 +2793,14 @@ function enqueueCrawlLinks(urls) {
     if (state.crawl.queueDedup.has(clean)) return;
     state.crawl.queueDedup.add(clean);
     state.crawl.queue.push(clean);
+    perfCount('crawl.enqueue');
   });
+  perfGauge('crawl.queue', crawlQueueLength());
 }
 
-function collectCrawlLinksFromDocument(doc, baseUrl) {
+function collectCrawlLinksFromDocument(doc, baseUrl, details) {
+  const linkScanStartedAt = perfStart('crawl.linkScan');
+  perfCount('crawl.linkScan.document');
   const cfg = state.cfg;
   const out = [];
   const nexts = [];
@@ -2633,6 +2825,7 @@ function collectCrawlLinksFromDocument(doc, baseUrl) {
   priLinks.forEach(function(a) {
     pushCandidate(nexts, a.getAttribute('href'));
   });
+  if (details) details.priorityLinks = nexts.slice();
   const links = Array.from(doc.querySelectorAll('a[href]'));
   links.forEach(function(a) {
     const href = a.getAttribute('href');
@@ -2648,16 +2841,36 @@ function collectCrawlLinksFromDocument(doc, baseUrl) {
     seen.add(key);
     uniq.push(raw);
   });
+  perfCount('crawl.linkScan.links', uniq.length);
+  perfEnd('crawl.linkScan', linkScanStartedAt);
+  if (details) details.links = uniq.slice();
   return uniq;
 }
 
-function collectCrawlLinks() {
-  const list = collectCrawlLinksFromDocument(document, location.href);
+function collectCrawlLinks(doc, baseUrl, details) {
+  const sourceDoc = doc || document;
+  const sourceBase = baseUrl || location.href;
+  const list = collectCrawlLinksFromDocument(sourceDoc, sourceBase, details);
   if (location.hostname.indexOf('weekly.ascii.jp') !== -1) {
     const rescue = new URL('img.html', location.href).toString();
     if (list.indexOf(rescue) === -1) list.unshift(rescue);
   }
+  if (details) details.links = list.slice();
   return list;
+}
+
+function collectCrawlBootstrap(doc, baseUrl) {
+  const sourceDoc = doc || document;
+  const sourceBase = baseUrl || location.href;
+  const details = {};
+  const links = collectCrawlLinks(sourceDoc, sourceBase, details);
+  perfCount('crawl.bootstrap.collect');
+  return {
+    links: links.slice(),
+    priorityLinks: (details.priorityLinks || []).slice(),
+    bodySameOriginCount: countBodySameOriginLinks(sourceDoc, sourceBase),
+    pagerPlan: buildPagerPlan(sourceBase, sourceDoc)
+  };
 }
 
 function buildPagerPlan(baseUrl, doc) {
@@ -2821,6 +3034,8 @@ async function crawlFetch(url) {
     try { controller.abort(); } catch (e) {}
   }, state.cfg.crawlTimeoutMs);
   state.crawl.inFlight += 1;
+  const crawlRequestStartedAt = perfStart('crawl.request');
+  perfGauge('crawl.inFlight', state.crawl.inFlight);
   updateProgress('net', token);
   try {
     const res = await fetch(url, { signal: controller.signal, credentials: 'same-origin' });
@@ -2860,11 +3075,16 @@ async function crawlFetch(url) {
     }
     updateProgress('crawl', token);
   } catch (e) {
+    if (controller.signal && controller.signal.aborted) perfCount('crawl.request.abort');
+    else perfCount('crawl.request.error');
     state.log.push('crawl', 'fetch error ' + url);
   } finally {
     clearTimeout(timer);
     state.abort.controllers.delete(controller);
     state.crawl.inFlight -= 1;
+    perfGauge('crawl.inFlight', state.crawl.inFlight);
+    perfGauge('crawl.queue', crawlQueueLength());
+    perfEnd('crawl.request', crawlRequestStartedAt);
   }
 }
 
@@ -2887,25 +3107,31 @@ function extractUrlsFromText(html, baseUrl) {
 async function startCrawl() {
   if (state.crawl.started) return;
   state.crawl.started = true;
+  perfCount('crawl.start');
   state.crawl.queue = [];
   state.crawl.queueHead = 0;
   state.crawl.queueDedup.clear();
   state.crawl.mode = '';
   state.crawl.pagerBase = '';
   state.crawl.pagerParam = '';
-  const plan = buildPagerPlan(location.href, document);
+  const bootstrap = state.cfg.crawlBootstrapReuse && state.crawl.bootstrap
+    ? state.crawl.bootstrap
+    : null;
+  if (bootstrap) perfCount('crawl.bootstrap.reuse');
+  const plan = bootstrap ? bootstrap.pagerPlan : buildPagerPlan(location.href, document);
   if (plan && plan.urls && plan.urls.length) {
     state.crawl.mode = 'pager';
     state.crawl.pagerBase = plan.baseKey;
     state.crawl.pagerParam = plan.param;
     enqueueCrawlLinks(plan.urls);
   } else {
-    enqueueCrawlLinks(collectCrawlLinks());
+    enqueueCrawlLinks(bootstrap ? bootstrap.links : collectCrawlLinks());
   }
   state.crawl.limit = state.cfg.crawlBaseLimit + (state.crawl.allowUserBoost ? state.cfg.crawlBoost : 0);
   if (state.crawl.mode === 'pager') {
     state.crawl.limit = Math.max(state.crawl.limit, crawlQueueLength() + 2);
   }
+  perfGauge('crawl.queue', crawlQueueLength());
   state.log.push('crawl', 'start mode=' + (state.crawl.mode || 'normal') + ' queue=' + crawlQueueLength() + ' limit=' + state.crawl.limit + ' visited=' + state.crawl.visited.size + ' inFlight=' + state.crawl.inFlight + ' errors=' + state.items.errorCount);
   if (state.crawl.timer) clearTimeout(state.crawl.timer);
   state.crawl.timer = setTimeout(function() { state.crawl.timer = 0; pumpCrawl(); }, 0);
@@ -2955,6 +3181,7 @@ function boostCrawl(reason) {
 
 /* [10] ui-shell */
 function createShell() {
+  perfCount('shell.create');
   const root = document.createElement('div');
   root.id = ROOT_ID;
   root.style.position = 'fixed';
@@ -2973,59 +3200,108 @@ function createShell() {
   const style = document.createElement('style');
   style.textContent = `
     :host { --ui-scale: 1; --lb-scale: 1; }
-    :host, * { box-sizing: border-box; }
-    .wrap { position: fixed; inset: 0; font-family: "Hiragino Sans", "Avenir Next", "SF Pro Text", sans-serif; color: #eee; --ui-scale: 1; --lb-scale: 1; }
-    .wrap.is-iphone { --ui-scale: 1.00; --lb-scale: 1.05; }
-    .wrap.is-ipad { --ui-scale: 0.92; --lb-scale: 1.18; }
-    .bg { position: absolute; inset: 0; background: #000; pointer-events: none; z-index: 0; }
-    .panel { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px; padding: calc(env(safe-area-inset-top) + 10px) 10px calc(env(safe-area-inset-bottom) + 10px); background: rgba(0, 0, 0, 0.92); pointer-events: auto; z-index: 1; }
-    .header { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
-    .title { font-size: calc(16px * var(--ui-scale)); font-weight: 700; letter-spacing: 0.02em; }
-    .btns { display: flex; gap: 6px; }
-    .btn { font-size: calc(12px * var(--ui-scale)); padding: calc(6px * var(--ui-scale)) calc(10px * var(--ui-scale)); border: 1px solid #555; background: #111; color: #eee; border-radius: 999px; }
-    .btn.danger { background: #fff; color: #111; border-color: #fff; }
-    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-    .chip { font-size: calc(11px * var(--ui-scale)); padding: calc(6px * var(--ui-scale)) calc(10px * var(--ui-scale)); border-radius: 999px; border: 1px solid #555; background: #111; color: #eee; }
-    .chip.active { background: #fff; color: #111; border-color: #fff; }
-    .chip-page { font-size: calc(10px * var(--ui-scale)); padding: calc(3px * var(--ui-scale)) calc(6px * var(--ui-scale)); border-radius: 999px; border: 1px solid #444; background: #111; color: #bbb; }
-    .info { font-size: calc(12px * var(--ui-scale)); opacity: 0.75; color: #cfcfcf; }
-    .progress { font-size: calc(11px * var(--ui-scale)); opacity: 0.65; color: #b0b0b0; }
-    .grid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; padding-bottom: 10px; align-content: start; grid-auto-rows: auto; }
-    .card { background: #0b0b0b; border-radius: 14px; border: 1px solid #333; overflow: hidden; display: flex; flex-direction: column; position: relative; contain: layout paint; }
-    .card.is-hidden { display: none; }
-    .card.is-error { opacity: 0.7; }
-    .card.is-current { outline: 2px solid #fff; outline-offset: -2px; box-shadow: 0 0 0 2px rgba(255,255,255,0.2); }
-    .thumb { border: 0; padding: 0; background: transparent; cursor: pointer; display: block; position: relative; }
-    .thumb.is-playable::before, .thumb.is-playable::after { content: ''; position: absolute; left: 50%; top: 50%; pointer-events: none; z-index: 3; }
-    .thumb.is-playable::before {
+    :host, :where(.fmp-css-scope), :where(.fmp-css-scope) * { box-sizing: border-box; }
+    :where(.fmp-css-scope).wrap,
+    #__fmp_root__ :where(.fmp-css-scope).wrap {
+      position: fixed;
+      inset: 0;
+      font-family: "Hiragino Sans", "Avenir Next", "SF Pro Text", sans-serif;
+      color: var(--fmp-text, #eee);
+      --ui-scale: 1;
+      --lb-scale: 1;
+      ${state.cfg.dmThemeTokensEnabled ? `
+      color-scheme: dark;
+      --fmp-bg: #000;
+      --fmp-panel-bg: rgba(0, 0, 0, 0.92);
+      --fmp-card-bg: #0b0b0b;
+      --fmp-control-bg: #111;
+      --fmp-text: #eee;
+      --fmp-text-on-accent: #111;
+      --fmp-text-muted: #bbb;
+      --fmp-text-subtle: #cfcfcf;
+      --fmp-text-progress: #b0b0b0;
+      --fmp-text-placeholder: #9a9a9a;
+      --fmp-border: #555;
+      --fmp-border-strong: #333;
+      --fmp-border-soft: #444;
+      --fmp-accent: #fff;
+      --fmp-line-soft: rgba(255,255,255,0.16);
+      --fmp-line-mid: rgba(255,255,255,0.18);
+      --fmp-line: rgba(255,255,255,0.20);
+      --fmp-line-strong: rgba(255,255,255,0.35);
+      --fmp-play-icon: rgba(255,255,255,0.85);
+      --fmp-overlay: rgba(0,0,0,0.55);
+      --fmp-overlay-soft: rgba(0,0,0,0.35);
+      --fmp-badge-bg: rgba(255,255,255,0.78);
+      ` : ''}
+    }
+    :where(.fmp-css-scope).wrap.is-iphone { --ui-scale: 1.00; --lb-scale: 1.05; }
+    :where(.fmp-css-scope).wrap.is-ipad { --ui-scale: 0.92; --lb-scale: 1.18; }
+    :where(.fmp-css-scope).wrap.dm-class-styles .ph.dm-embed-preview { flex-direction: column; gap: 4px; padding: 10px 8px; text-align: center; }
+    :where(.fmp-css-scope).wrap.dm-class-styles .dm-preview-row { max-width: 100%; overflow-wrap: anywhere; line-height: 1.3; }
+    :where(.fmp-css-scope).wrap.dm-class-styles .dm-preview-primary { font-size: 12px; font-weight: 700; }
+    :where(.fmp-css-scope).wrap.dm-class-styles .dm-preview-secondary { color: var(--fmp-text-placeholder, #9a9a9a); font-size: 10px; font-weight: 500; }
+    :where(.fmp-css-scope).wrap.dm-class-styles .dm-copy-modal { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 2147483647; }
+    :where(.fmp-css-scope).wrap.dm-class-styles .dm-copy-box { width: 90vw; max-width: 720px; background: var(--fmp-control-bg, #111); border: 1px solid var(--fmp-border-soft, #444); border-radius: 14px; padding: 12px; color: var(--fmp-text, #eee); }
+    :where(.fmp-css-scope).wrap.dm-class-styles .dm-copy-label { font-size: 12px; margin-bottom: 8px; }
+    :where(.fmp-css-scope).wrap.dm-class-styles .dm-copy-textarea,
+    #__fmp_root__ :where(.fmp-css-scope).wrap.dm-class-styles .dm-copy-textarea { width: 100%; height: 40vh; background: var(--fmp-card-bg, #0b0b0b); color: var(--fmp-text, #eee); border: 1px solid var(--fmp-border-strong, #333); border-radius: 10px; padding: 8px; }
+    :where(.fmp-css-scope).wrap.dm-class-styles .dm-copy-close,
+    #__fmp_root__ :where(.fmp-css-scope).wrap.dm-class-styles .dm-copy-close { margin-top: 10px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--fmp-border, #555); background: var(--fmp-accent, #fff); color: var(--fmp-text-on-accent, #111); }
+    :where(.fmp-css-scope).wrap.dm-class-styles .dm-boot-badge { position: fixed; top: 12px; right: 12px; z-index: 2147483647; background: var(--fmp-control-bg, #111); color: var(--fmp-text, #eee); border: 1px solid var(--fmp-border-soft, #444); border-radius: 10px; padding: 6px 8px; font-size: 11px; }
+    :where(.fmp-css-scope) .bg { position: absolute; inset: 0; background: var(--fmp-bg, #000); pointer-events: none; z-index: 0; }
+    :where(.fmp-css-scope) .panel { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px; padding: calc(env(safe-area-inset-top) + 10px) 10px calc(env(safe-area-inset-bottom) + 10px); background: var(--fmp-panel-bg, rgba(0, 0, 0, 0.92)); pointer-events: auto; z-index: 1; }
+    :where(.fmp-css-scope) .header { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+    :where(.fmp-css-scope) .title { font-size: calc(16px * var(--ui-scale)); font-weight: 700; letter-spacing: 0.02em; }
+    :where(.fmp-css-scope) .btns { display: flex; gap: 6px; }
+    :where(.fmp-css-scope) .btn,
+    #__fmp_root__ :where(.fmp-css-scope) .btn { font-size: calc(12px * var(--ui-scale)); padding: calc(6px * var(--ui-scale)) calc(10px * var(--ui-scale)); border: 1px solid var(--fmp-border, #555); background: var(--fmp-control-bg, #111); color: var(--fmp-text, #eee); border-radius: 999px; }
+    :where(.fmp-css-scope) .btn.danger { background: var(--fmp-accent, #fff); color: var(--fmp-text-on-accent, #111); border-color: var(--fmp-accent, #fff); }
+    :where(.fmp-css-scope) .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    :where(.fmp-css-scope) .chip,
+    #__fmp_root__ :where(.fmp-css-scope) .chip { font-size: calc(11px * var(--ui-scale)); padding: calc(6px * var(--ui-scale)) calc(10px * var(--ui-scale)); border-radius: 999px; border: 1px solid var(--fmp-border, #555); background: var(--fmp-control-bg, #111); color: var(--fmp-text, #eee); }
+    :where(.fmp-css-scope) .chip.active { background: var(--fmp-accent, #fff); color: var(--fmp-text-on-accent, #111); border-color: var(--fmp-accent, #fff); }
+    :where(.fmp-css-scope) .chip-page { font-size: calc(10px * var(--ui-scale)); padding: calc(3px * var(--ui-scale)) calc(6px * var(--ui-scale)); border-radius: 999px; border: 1px solid var(--fmp-border-soft, #444); background: var(--fmp-control-bg, #111); color: var(--fmp-text-muted, #bbb); }
+    :where(.fmp-css-scope) .info { font-size: calc(12px * var(--ui-scale)); opacity: 0.75; color: var(--fmp-text-subtle, #cfcfcf); }
+    :where(.fmp-css-scope) .progress { font-size: calc(11px * var(--ui-scale)); opacity: 0.65; color: var(--fmp-text-progress, #b0b0b0); }
+    :where(.fmp-css-scope) .grid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; padding-bottom: 10px; align-content: start; grid-auto-rows: auto; }
+    :where(.fmp-css-scope) .card,
+    #__fmp_root__ :where(.fmp-css-scope) .card { background: var(--fmp-card-bg, #0b0b0b); border-radius: 14px; border: 1px solid var(--fmp-border-strong, #333); overflow: hidden; display: flex; flex-direction: column; position: relative; contain: layout paint; }
+    :where(.fmp-css-scope) .card.is-hidden { display: none; }
+    :where(.fmp-css-scope) .card.is-error { opacity: 0.7; }
+    :where(.fmp-css-scope) .card.is-current { outline: 2px solid var(--fmp-accent, #fff); outline-offset: -2px; box-shadow: 0 0 0 2px var(--fmp-line, rgba(255,255,255,0.2)); }
+    :where(.fmp-css-scope) .thumb,
+    #__fmp_root__ :where(.fmp-css-scope) .thumb { border: 0; padding: 0; background: transparent; cursor: pointer; display: block; position: relative; }
+    :where(.fmp-css-scope) .thumb.is-playable::before, :where(.fmp-css-scope) .thumb.is-playable::after { content: ''; position: absolute; left: 50%; top: 50%; pointer-events: none; z-index: 3; }
+    :where(.fmp-css-scope) .thumb.is-playable::before {
       width: calc(42px * var(--ui-scale));
       height: calc(42px * var(--ui-scale));
       margin-left: calc(-21px * var(--ui-scale));
       margin-top: calc(-21px * var(--ui-scale));
       border-radius: 999px;
-      background: rgba(0,0,0,0.35);
-      box-shadow: 0 0 0 1px rgba(255,255,255,0.18);
+      background: var(--fmp-overlay-soft, rgba(0,0,0,0.35));
+      box-shadow: 0 0 0 1px var(--fmp-line-mid, rgba(255,255,255,0.18));
     }
-    .thumb.is-playable::after {
+    :where(.fmp-css-scope) .thumb.is-playable::after {
       margin-left: calc(-3px * var(--ui-scale));
       margin-top: calc(-9px * var(--ui-scale));
       width: 0;
       height: 0;
       border-style: solid;
       border-width: calc(9px * var(--ui-scale)) 0 calc(9px * var(--ui-scale)) calc(14px * var(--ui-scale));
-      border-color: transparent transparent transparent rgba(255,255,255,0.85);
+      border-color: transparent transparent transparent var(--fmp-play-icon, rgba(255,255,255,0.85));
     }
-    .thumb img, .thumb video, .thumb .ph { width: 100%; height: 140px; object-fit: contain; object-position: center; display: block; background: #000; }
-    .thumb img { transition: opacity 120ms ease; }
-    .fmp-gpu { transform: translateZ(0); -webkit-transform: translateZ(0); backface-visibility: hidden; -webkit-backface-visibility: hidden; will-change: opacity, transform; }
-    .thumb .ph { display: flex; align-items: center; justify-content: center; font-size: 11px; color: #9a9a9a; }
-    .card[data-kind="video"]::after,
-    .card[data-kind="embed"]::after,
-    .card[data-kind="img"][data-etype="INSTA"]::after {
+    :where(.fmp-css-scope) .thumb img, :where(.fmp-css-scope) .thumb video, :where(.fmp-css-scope) .thumb .ph { width: 100%; height: 140px; object-fit: contain; object-position: center; display: block; background: var(--fmp-bg, #000); }
+    :where(.fmp-css-scope) .thumb img { transition: opacity 120ms ease; }
+    :where(.fmp-css-scope) .fmp-gpu { transform: translateZ(0); -webkit-transform: translateZ(0); backface-visibility: hidden; -webkit-backface-visibility: hidden; will-change: opacity, transform; }
+    :where(.fmp-css-scope) .thumb .ph { display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--fmp-text-placeholder, #9a9a9a); }
+    :where(.fmp-css-scope) .card[data-kind="video"]::after,
+    :where(.fmp-css-scope) .card[data-kind="embed"]::after,
+    :where(.fmp-css-scope) .card[data-kind="img"][data-etype="INSTA"]::after {
       content: '';
       position: absolute;
       inset: 0;
-      border: 2px solid rgba(255,255,255,0.16);
+      border: 2px solid var(--fmp-line-soft, rgba(255,255,255,0.16));
       border-radius: inherit;
       pointer-events: none;
       z-index: 6;
@@ -3033,53 +3309,53 @@ function createShell() {
       -webkit-transform: translateZ(0);
       will-change: transform;
     }
-    .card[data-kind="embed"][data-etype="YT"]::after {
+    :where(.fmp-css-scope) .card[data-kind="embed"][data-etype="YT"]::after {
       border-color: transparent;
       border-image: linear-gradient(135deg, #ff0033 0%, #ff4e45 55%, #b2071d 100%) 1;
     }
-    .card[data-kind="embed"][data-etype="X"]::after {
+    :where(.fmp-css-scope) .card[data-kind="embed"][data-etype="X"]::after {
       border-color: transparent;
       border-image: linear-gradient(135deg, #0f1419 0%, #15202b 55%, #1d9bf0 100%) 1;
     }
-    .card[data-kind="embed"][data-etype="TT"]::after {
+    :where(.fmp-css-scope) .card[data-kind="embed"][data-etype="TT"]::after {
       border-color: transparent;
       border-image: linear-gradient(135deg, #00f2ea 0%, #111111 50%, #ff0050 100%) 1;
     }
-    .card[data-kind="embed"][data-etype="INSTA"]::after,
-    .card[data-kind="img"][data-etype="INSTA"]::after {
+    :where(.fmp-css-scope) .card[data-kind="embed"][data-etype="INSTA"]::after,
+    :where(.fmp-css-scope) .card[data-kind="img"][data-etype="INSTA"]::after {
       border-color: transparent;
       border-image: linear-gradient(135deg, #f58529 0%, #dd2a7b 45%, #8134af 75%, #515bd4 100%) 1;
     }
-    .card[data-kind="embed"][data-etype="IMGUR"]::after {
+    :where(.fmp-css-scope) .card[data-kind="embed"][data-etype="IMGUR"]::after {
       border-color: transparent;
       border-image: linear-gradient(135deg, #1bb76e 0%, #2ddc85 55%, #0e8f55 100%) 1;
     }
-    .card[data-kind="embed"][data-etype="OTHER"]::after { border-color: rgba(255,255,255,0.16); }
-    .card[data-kind="video"] .badge { background: rgba(255,255,255,0.20); color: #fff; border: 1px solid rgba(255,255,255,0.35); }
-    .card[data-kind="embed"][data-etype="YT"] .badge {
+    :where(.fmp-css-scope) .card[data-kind="embed"][data-etype="OTHER"]::after { border-color: var(--fmp-line-soft, rgba(255,255,255,0.16)); }
+    :where(.fmp-css-scope) .card[data-kind="video"] .badge { background: var(--fmp-line, rgba(255,255,255,0.20)); color: var(--fmp-accent, #fff); border: 1px solid var(--fmp-line-strong, rgba(255,255,255,0.35)); }
+    :where(.fmp-css-scope) .card[data-kind="embed"][data-etype="YT"] .badge {
       background: linear-gradient(135deg, #ff0033 0%, #ff4e45 55%, #b2071d 100%);
       color: #fff;
     }
-    .card[data-kind="embed"][data-etype="X"] .badge {
+    :where(.fmp-css-scope) .card[data-kind="embed"][data-etype="X"] .badge {
       background: linear-gradient(135deg, #0f1419 0%, #15202b 55%, #1d9bf0 100%);
       color: #fff;
     }
-    .card[data-kind="embed"][data-etype="TT"] .badge {
+    :where(.fmp-css-scope) .card[data-kind="embed"][data-etype="TT"] .badge {
       background: linear-gradient(135deg, #00f2ea 0%, #111111 50%, #ff0050 100%);
       color: #fff;
     }
-    .card[data-kind="embed"][data-etype="INSTA"] .badge,
-    .card[data-kind="img"][data-etype="INSTA"] .badge {
+    :where(.fmp-css-scope) .card[data-kind="embed"][data-etype="INSTA"] .badge,
+    :where(.fmp-css-scope) .card[data-kind="img"][data-etype="INSTA"] .badge {
       background: linear-gradient(135deg, #f58529 0%, #dd2a7b 45%, #8134af 75%, #515bd4 100%);
       color: #fff;
     }
-    .card[data-kind="embed"][data-etype="IMGUR"] .badge {
+    :where(.fmp-css-scope) .card[data-kind="embed"][data-etype="IMGUR"] .badge {
       background: linear-gradient(135deg, #1bb76e 0%, #2ddc85 55%, #0e8f55 100%);
       color: #fff;
     }
-    .card[data-kind="embed"][data-etype="OTHER"] .badge { background: rgba(255,255,255,0.78); color: #111; }
-    .ph-load { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.35); font-size: 11px; color: #bbb; pointer-events: none; transition: opacity 140ms ease; will-change: opacity; }
-    .badge {
+    :where(.fmp-css-scope) .card[data-kind="embed"][data-etype="OTHER"] .badge { background: var(--fmp-badge-bg, rgba(255,255,255,0.78)); color: var(--fmp-text-on-accent, #111); }
+    :where(.fmp-css-scope) .ph-load { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--fmp-overlay-soft, rgba(0,0,0,0.35)); font-size: 11px; color: var(--fmp-text-muted, #bbb); pointer-events: none; transition: opacity 140ms ease; will-change: opacity; }
+    :where(.fmp-css-scope) .badge {
       position: absolute;
       top: 6px;
       left: 6px;
@@ -3088,8 +3364,8 @@ function createShell() {
       display: flex;
       align-items: center;
       justify-content: center;
-      background: rgba(255,255,255,0.78);
-      color: #111;
+      background: var(--fmp-badge-bg, rgba(255,255,255,0.78));
+      color: var(--fmp-text-on-accent, #111);
       font-size: calc(10px * var(--ui-scale));
       font-weight: 700;
       line-height: 1;
@@ -3099,7 +3375,7 @@ function createShell() {
       transform: translateZ(0);
       -webkit-transform: translateZ(0);
     }
-    .hlabel {
+    :where(.fmp-css-scope) .hlabel {
       position: absolute;
       left: 6px;
       bottom: 6px;
@@ -3107,54 +3383,57 @@ function createShell() {
       line-height: 1;
       padding: 2px 6px;
       border-radius: 999px;
-      border: 1px solid rgba(255,255,255,0.20);
-      background: rgba(0,0,0,0.55);
-      color: #fff;
+      border: 1px solid var(--fmp-line, rgba(255,255,255,0.20));
+      background: var(--fmp-overlay, rgba(0,0,0,0.55));
+      color: var(--fmp-accent, #fff);
       z-index: 8;
       display: none;
       pointer-events: none;
     }
-    .card[data-oh="1"] .hlabel, .card[data-ah="1"] .hlabel { display: block; }
-    .dup-badge { position: absolute; top: 6px; right: 6px; background: #111; color: #eee; font-size: 10px; padding: 2px 6px; border-radius: 999px; border: 1px solid #555; display: none; z-index: 2; cursor: pointer; max-width: 72%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .meta { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; font-size: 11px; color: #bbb; }
-    .open { text-decoration: none; font-size: 14px; padding: 4px 6px; border-radius: 6px; border: 1px solid #555; color: #eee; }
-    .inline { font-size: 11px; padding: 4px 6px; border-radius: 6px; border: 1px solid #555; background: #111; color: #eee; }
-    .lb { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.92); display: none; align-items: center; justify-content: center; padding: calc(env(safe-area-inset-top) + 16px) 12px calc(env(safe-area-inset-bottom) + 16px); z-index: 2; pointer-events: auto; }
-    .lb.open { display: flex; }
-    .lb-frame { max-width: 92vw; max-height: 78vh; border-radius: 16px; overflow: hidden; background: #000; display: flex; align-items: center; justify-content: center; position: relative; border: 2px solid rgba(255,255,255,0.16); box-sizing: border-box; }
-    .lb[data-kind="embed"][data-etype="YT"] .lb-frame {
+    :where(.fmp-css-scope) .card[data-oh="1"] .hlabel, :where(.fmp-css-scope) .card[data-ah="1"] .hlabel { display: block; }
+    :where(.fmp-css-scope) .dup-badge { position: absolute; top: 6px; right: 6px; background: var(--fmp-control-bg, #111); color: var(--fmp-text, #eee); font-size: 10px; padding: 2px 6px; border-radius: 999px; border: 1px solid var(--fmp-border, #555); display: none; z-index: 2; cursor: pointer; max-width: 72%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    :where(.fmp-css-scope) .meta { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; font-size: 11px; color: var(--fmp-text-muted, #bbb); }
+    :where(.fmp-css-scope) .open,
+    #__fmp_root__ :where(.fmp-css-scope) .open { text-decoration: none; font-size: 14px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--fmp-border, #555); color: var(--fmp-text, #eee); }
+    :where(.fmp-css-scope) .inline,
+    #__fmp_root__ :where(.fmp-css-scope) .inline { font-size: 11px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--fmp-border, #555); background: var(--fmp-control-bg, #111); color: var(--fmp-text, #eee); }
+    :where(.fmp-css-scope) .lb { position: fixed; inset: 0; background: var(--fmp-panel-bg, rgba(0, 0, 0, 0.92)); display: none; align-items: center; justify-content: center; padding: calc(env(safe-area-inset-top) + 16px) 12px calc(env(safe-area-inset-bottom) + 16px); z-index: 2; pointer-events: auto; }
+    :where(.fmp-css-scope) .lb.open { display: flex; }
+    :where(.fmp-css-scope) .lb-frame { max-width: 92vw; max-height: 78vh; border-radius: 16px; overflow: hidden; background: var(--fmp-bg, #000); display: flex; align-items: center; justify-content: center; position: relative; border: 2px solid var(--fmp-line-soft, rgba(255,255,255,0.16)); box-sizing: border-box; }
+    :where(.fmp-css-scope) .lb[data-kind="embed"][data-etype="YT"] .lb-frame {
       border-color: transparent;
       border-image: linear-gradient(135deg, #ff0033 0%, #ff4e45 55%, #b2071d 100%) 1;
     }
-    .lb[data-kind="embed"][data-etype="X"] .lb-frame {
+    :where(.fmp-css-scope) .lb[data-kind="embed"][data-etype="X"] .lb-frame {
       border-color: transparent;
       border-image: linear-gradient(135deg, #0f1419 0%, #15202b 55%, #1d9bf0 100%) 1;
     }
-    .lb[data-kind="embed"][data-etype="TT"] .lb-frame {
+    :where(.fmp-css-scope) .lb[data-kind="embed"][data-etype="TT"] .lb-frame {
       border-color: transparent;
       border-image: linear-gradient(135deg, #00f2ea 0%, #111111 50%, #ff0050 100%) 1;
     }
-    .lb[data-etype="INSTA"] .lb-frame {
+    :where(.fmp-css-scope) .lb[data-etype="INSTA"] .lb-frame {
       border-color: transparent;
       border-image: linear-gradient(135deg, #f58529 0%, #dd2a7b 45%, #8134af 75%, #515bd4 100%) 1;
     }
-    .lb[data-kind="embed"][data-etype="IMGUR"] .lb-frame {
+    :where(.fmp-css-scope) .lb[data-kind="embed"][data-etype="IMGUR"] .lb-frame {
       border-color: transparent;
       border-image: linear-gradient(135deg, #1bb76e 0%, #2ddc85 55%, #0e8f55 100%) 1;
     }
-    .lb[data-kind="embed"][data-etype="OTHER"] .lb-frame { border-color: rgba(255,255,255,0.16); }
-    .lb-frame img, .lb-frame video, .lb-frame canvas { max-width: 92vw; max-height: 78vh; object-fit: contain; display: block; }
-    .lb-frame img { transition: opacity 120ms; transform: translateZ(0); -webkit-transform: translateZ(0); backface-visibility: hidden; -webkit-backface-visibility: hidden; will-change: opacity, transform; }
-    .lb-controls { position: fixed; bottom: calc(env(safe-area-inset-bottom) + 16px); left: 0; right: 0; display: flex; justify-content: center; gap: 10px; }
-    .wrap.is-iphone .lb-controls,
-    .wrap.is-ipad .lb-controls { justify-content: flex-start; padding-left: calc(env(safe-area-inset-left) + 14px); padding-right: 0; }
-    .lb-btn { background: #fff; color: #111; border-radius: 999px; border: 0; padding: calc(8px * var(--lb-scale)) calc(14px * var(--lb-scale)); font-size: calc(12px * var(--lb-scale)); }
-    .lb-badge {
+    :where(.fmp-css-scope) .lb[data-kind="embed"][data-etype="OTHER"] .lb-frame { border-color: var(--fmp-line-soft, rgba(255,255,255,0.16)); }
+    :where(.fmp-css-scope) .lb-frame img, :where(.fmp-css-scope) .lb-frame video, :where(.fmp-css-scope) .lb-frame canvas { max-width: 92vw; max-height: 78vh; object-fit: contain; display: block; }
+    :where(.fmp-css-scope) .lb-frame img { transition: opacity 120ms; transform: translateZ(0); -webkit-transform: translateZ(0); backface-visibility: hidden; -webkit-backface-visibility: hidden; will-change: opacity, transform; }
+    :where(.fmp-css-scope) .lb-controls { position: fixed; bottom: calc(env(safe-area-inset-bottom) + 16px); left: 0; right: 0; display: flex; justify-content: center; gap: 10px; }
+    :where(.fmp-css-scope).wrap.is-iphone .lb-controls,
+    :where(.fmp-css-scope).wrap.is-ipad .lb-controls { justify-content: flex-start; padding-left: calc(env(safe-area-inset-left) + 14px); padding-right: 0; }
+    :where(.fmp-css-scope) .lb-btn,
+    #__fmp_root__ :where(.fmp-css-scope) .lb-btn { background: var(--fmp-accent, #fff); color: var(--fmp-text-on-accent, #111); border-radius: 999px; border: 0; padding: calc(8px * var(--lb-scale)) calc(14px * var(--lb-scale)); font-size: calc(12px * var(--lb-scale)); }
+    :where(.fmp-css-scope) .lb-badge {
       position: absolute;
       top: 8px;
       right: 8px;
-      background: #fff;
-      color: #111;
+      background: var(--fmp-accent, #fff);
+      color: var(--fmp-text-on-accent, #111);
       font-size: 10px;
       padding: 2px 6px;
       border-radius: 6px;
@@ -3163,19 +3442,21 @@ function createShell() {
       line-height: 1.2;
       text-align: right;
     }
-    .lb-embed { width: 92vw; height: 70vh; border: 0; background: #000; }
-    .lb-video-fallback { width: 92vw; height: 70vh; border: 0; background: #000; border-radius: 16px; }
-    .lb-tap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.55); color: #fff; border: 0; font-size: 12px; }
-    .embed { width: 100%; border: 0; height: ${state.cfg.embedHeight}px; }
+    :where(.fmp-css-scope) .lb-embed { width: 92vw; height: 70vh; border: 0; background: var(--fmp-bg, #000); }
+    :where(.fmp-css-scope) .lb-video-fallback { width: 92vw; height: 70vh; border: 0; background: var(--fmp-bg, #000); border-radius: 16px; }
+    :where(.fmp-css-scope) .lb-tap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--fmp-overlay, rgba(0,0,0,0.55)); color: var(--fmp-accent, #fff); border: 0; font-size: 12px; }
+    :where(.fmp-css-scope) .embed { width: 100%; border: 0; height: ${state.cfg.embedHeight}px; }
     @media (min-width: 900px) {
-      .grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
-      .thumb img, .thumb video, .thumb .ph { height: 180px; }
+      :where(.fmp-css-scope) .grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+      :where(.fmp-css-scope) .thumb img, :where(.fmp-css-scope) .thumb video, :where(.fmp-css-scope) .thumb .ph { height: 180px; }
     }
   `;
   const wrap = document.createElement('div');
-  wrap.className = 'wrap';
+  wrap.className = 'wrap fmp-css-scope';
   if (state.env.isIPhone) wrap.classList.add('is-iphone');
   if (state.env.isIPad) wrap.classList.add('is-ipad');
+  if (state.cfg.dmThemeTokensEnabled && state.cfg.dmClassStylesEnabled) wrap.classList.add('dm-class-styles');
+  if (state.cfg.dmEmbedSurfaceEnabled) wrap.classList.add('dm-embed-surface');
   const bg = document.createElement('div');
   bg.className = 'bg';
   bg.style.setProperty('pointer-events', 'none', 'important');
@@ -3351,6 +3632,7 @@ function mountShell(attempt) {
   try {
     if (host) host.appendChild(root);
   } catch (e) {}
+  if (root.isConnected) perfCount('shell.mount');
   if (!root.isConnected && (attempt || 0) < 12) {
     requestAnimationFrame(function() { mountShell((attempt || 0) + 1); });
   }
@@ -3447,18 +3729,23 @@ function bindVisibilityHandlers() {
 function showBootBadge(message) {
   const wrap = state.ui.wrap;
   if (!wrap) return;
+  const useClassStyles = !!(state.cfg.dmThemeTokensEnabled && state.cfg.dmClassStylesEnabled);
   const badge = document.createElement('div');
   badge.textContent = message;
-  badge.style.position = 'fixed';
-  badge.style.top = '12px';
-  badge.style.right = '12px';
-  badge.style.zIndex = '2147483647';
-  badge.style.background = '#111';
-  badge.style.color = '#eee';
-  badge.style.border = '1px solid #444';
-  badge.style.borderRadius = '10px';
-  badge.style.padding = '6px 8px';
-  badge.style.fontSize = '11px';
+  if (useClassStyles) {
+    badge.className = 'dm-boot-badge';
+  } else {
+    badge.style.position = 'fixed';
+    badge.style.top = '12px';
+    badge.style.right = '12px';
+    badge.style.zIndex = '2147483647';
+    badge.style.background = '#111';
+    badge.style.color = '#eee';
+    badge.style.border = '1px solid #444';
+    badge.style.borderRadius = '10px';
+    badge.style.padding = '6px 8px';
+    badge.style.fontSize = '11px';
+  }
   wrap.appendChild(badge);
   setTimeout(function() {
     if (badge.parentNode) badge.parentNode.removeChild(badge);
@@ -3724,6 +4011,7 @@ function thumbApplyFit(img) {
 
 function applyThumbMetrics(item, img, card) {
   try {
+    perfMeasureSourceEl(item);
     const w = img.naturalWidth || 0;
     const h = img.naturalHeight || 0;
     if (w && h) {
@@ -3786,6 +4074,7 @@ function applyThumbMetrics(item, img, card) {
         updateInfo();
       }
 
+      releaseSourceEl(item, 'thumb-metrics');
       // スクロール中はrect計測を避け、後で分割適用
       if (state.thumb && state.thumb.pausedByScroll) {
         if (img && img.dataset) {
@@ -4112,6 +4401,7 @@ function initThumbLoader() {
 
   const markScrollPause = function() {
     if (!state.thumb) return;
+    if (!state.thumb.pausedByScroll) state.thumb.scrollPriorityRescueUsed = false;
     state.thumb.pausedByScroll = true;
     state.thumb.scrollPauseUntil = Date.now() + (state.cfg.thumbScrollPauseMs || 0);
     if (state.thumb.scrollResumeTimer) {
@@ -4178,6 +4468,11 @@ function thumbQueueLength() {
   return pri + normal;
 }
 
+function thumbPriorityQueueLength() {
+  if (!state.thumb) return 0;
+  return Math.max(0, (state.thumb.queuePri.length || 0) - (state.thumb.queuePriHead || 0));
+}
+
 function compactThumbQueue(name) {
   if (!state.thumb) return;
   const queueKey = name === 'pri' ? 'queuePri' : 'queue';
@@ -4199,10 +4494,13 @@ function pushThumbQueue(item, priority) {
   if (priority) {
     state.thumb.queuePri.push(item);
     item.__thumbQueuedPri = 1;
+    perfCount('thumb.enqueue.priority');
   } else {
     state.thumb.queue.push(item);
     item.__thumbQueuedPri = 0;
+    perfCount('thumb.enqueue.normal');
   }
+  perfGauge('thumb.queue', thumbQueueLength());
 }
 
 function popThumbQueue() {
@@ -4214,24 +4512,46 @@ function popThumbQueue() {
     item = null;
   }
   compactThumbQueue('pri');
-  if (item) return item;
+  if (item) {
+    perfCount('thumb.pop.priority');
+    perfGauge('thumb.queue', thumbQueueLength());
+    return item;
+  }
   while (state.thumb.queueHead < state.thumb.queue.length) {
     item = state.thumb.queue[state.thumb.queueHead++];
     if (item) break;
     item = null;
   }
   compactThumbQueue('normal');
+  if (item) perfCount('thumb.pop.normal');
+  perfGauge('thumb.queue', thumbQueueLength());
+  return item;
+}
+
+function popPriorityThumbQueue() {
+  if (!state.thumb) return null;
+  let item = null;
+  while (state.thumb.queuePriHead < state.thumb.queuePri.length) {
+    item = state.thumb.queuePri[state.thumb.queuePriHead++];
+    if (item) break;
+    item = null;
+  }
+  compactThumbQueue('pri');
+  if (item) perfCount('thumb.pop.priority');
+  perfGauge('thumb.queue', thumbQueueLength());
   return item;
 }
 
 function promoteQueuedThumbItem(item) {
   if (!state.thumb || !item) return;
   if (item.__thumbQueuedPri === 1) return;
+  perfCount('thumb.promote');
   pushThumbQueue(item, true);
 }
 
 function requeueThumbItem(item) {
   if (!state.thumb || !item) return;
+  perfCount(item.__thumbQueuedPri === 1 ? 'thumb.requeue.priority' : 'thumb.requeue.normal');
   pushThumbQueue(item, item.__thumbQueuedPri === 1);
 }
 
@@ -4267,6 +4587,9 @@ function thumbEnqueue(item, priority) {
   }
   state.thumb.queued.add(item.id);
   pushThumbQueue(item, pri);
+  if (item.__thumbInView) {
+    perfCount('thumb.visible.enqueue');
+  }
   markThumbProgress();
   thumbSchedulePump();
 }
@@ -4311,6 +4634,45 @@ function thumbPump() {
     gridRect = grid.getBoundingClientRect();
   }
   const probeLimit = 36;
+  if (hasIO && state.cfg.thumbScrollPriorityOnly) {
+    let requeued = 0;
+    const requeueLimit = Math.max(6, Math.min(probeLimit, (max || 1) * 6));
+    for (let i = 0; i < probeLimit && state.thumb.inFlight < max && thumbPriorityQueueLength(); i += 1) {
+      const item = popPriorityThumbQueue();
+      if (!item) continue;
+      if (item.__failed || item.__thumbLoaded || item.__thumbLoading) {
+        state.thumb.queued.delete(item.id);
+        item.__thumbQueuedPri = 0;
+        continue;
+      }
+      if (!item.card) {
+        state.thumb.queued.delete(item.id);
+        item.__thumbQueuedPri = 0;
+        continue;
+      }
+      if (!item.__thumbInView) {
+        requeueThumbItem(item);
+        requeued += 1;
+        if (requeued >= requeueLimit) break;
+        continue;
+      }
+      state.thumb.queued.delete(item.id);
+      item.__thumbQueuedPri = 0;
+      startThumbLoad(item);
+    }
+    if (
+      state.thumb.inFlight < max &&
+      !thumbPriorityQueueLength() &&
+      thumbQueueLength() &&
+      !state.thumb.scrollPriorityRescueUsed &&
+      typeof state.thumb.scanNow === 'function'
+    ) {
+      state.thumb.scrollPriorityRescueUsed = true;
+      perfCount('thumb.scrollPriorityRescue');
+      state.thumb.scanNow();
+    }
+    return;
+  }
   let requeued = 0;
   const requeueLimit = Math.max(6, Math.min(probeLimit, (max || 1) * 6));
   for (let i = 0; i < probeLimit && state.thumb.inFlight < max && thumbQueueLength(); i++) {
@@ -4413,6 +4775,14 @@ function startThumbLoad(item) {
   item.__thumbCtx = ctx;
   item.__thumbLoading = true;
   state.thumb.inFlight += 1;
+  perfCount('thumb.load.start');
+  perfMarkOnce('thumb.firstStart');
+  perfGauge('thumb.inFlight', state.thumb.inFlight);
+  perfGauge('thumb.queue', thumbQueueLength());
+  if (item.__thumbInView) {
+    perfCount('thumb.visible.start');
+    perfMarkOnce('thumb.firstVisibleStart');
+  }
   markThumbProgress();
   const getOverlayDelay = function() {
     const shownSrc = (img.currentSrc || img.src || '');
@@ -4449,6 +4819,8 @@ function startThumbLoad(item) {
     }
     state.thumb.queued.delete(item.id);
     state.thumb.inFlight = Math.max(0, state.thumb.inFlight - 1);
+    perfGauge('thumb.inFlight', state.thumb.inFlight);
+    perfGauge('thumb.queue', thumbQueueLength());
     markThumbProgress();
     if (current && item.__thumbCtx && item.__thumbCtx.token === token) {
       item.__thumbCtx = null;
@@ -4458,6 +4830,7 @@ function startThumbLoad(item) {
 
   ctx.abort = function(reason) {
     if (done) return;
+    perfCount('thumb.load.abort');
     ctx.aborted = true;
     clearOverlayShowTimer(item);
     if (isCurrent()) {
@@ -4476,6 +4849,9 @@ function startThumbLoad(item) {
     const pendingRefresh = !!item.__thumbPendingRefresh;
     item.__thumbPendingRefresh = 0;
     item.__thumbLoaded = true;
+    perfCount('thumb.load.success');
+    if (item.__thumbInView) perfCount('thumb.visible.loaded');
+    releaseSourceEl(item, 'thumb-success');
     finish();
     if (pendingRefresh && item.card && !item.__failed) {
       updateCard(item);
@@ -4492,12 +4868,17 @@ function startThumbLoad(item) {
       clearOverlayShowTimer(item);
       item.__thumbLoaded = true;
       hideThumbOverlay(card);
+      perfCount('thumb.load.previewError');
+      if (item.__thumbInView) perfCount('thumb.visible.error');
+      releaseSourceEl(item, 'thumb-preview-error');
       finish();
       if (item.__thumbCtx && item.__thumbCtx.token === token) item.__thumbCtx = null;
       return;
     }
     clearOverlayShowTimer(item);
     state.items.errorCount += 1;
+    perfCount('thumb.load.error');
+    if (item.__thumbInView) perfCount('thumb.visible.error');
     item.__failed = true;
     invalidateVisibilityStats('thumb-fail');
     try {
@@ -4508,6 +4889,7 @@ function startThumbLoad(item) {
     } catch (e) {}
     item.card = null;
     applyErrorVis();
+    releaseSourceEl(item, 'thumb-error');
     finish();
     if (item.__thumbCtx && item.__thumbCtx.token === token) item.__thumbCtx = null;
   };
@@ -4554,6 +4936,7 @@ function startThumbLoad(item) {
     }
     if (timer) clearTimeout(timer);
     item.__thumbStartedAt = Date.now();
+    perfCount('thumb.attempt');
     const baseSrc = candidateUrls[candidateIndex] || src;
     const targetSrc = retries > 0 ? addRetryBuster(baseSrc, retries) : baseSrc;
     if (img.dataset) img.dataset.src = baseSrc;
@@ -4574,6 +4957,9 @@ function startThumbLoad(item) {
         }
         clearOverlayShowTimer(item);
         revealThumb(card, img);
+        perfCount('thumb.reveal');
+        perfMarkOnce('thumb.firstReveal');
+        if (item.__thumbInView) perfMarkOnce('thumb.firstVisibleReveal');
         finalizeSuccess();
       };
       const settleAfterReady = function() {
@@ -4662,28 +5048,41 @@ function getMediaBadgeInfo(item) {
 
 function renderEmbedPlaceholder(ph, item) {
   if (!ph) return;
+  const useClassStyles = !!(state.cfg.dmThemeTokensEnabled && state.cfg.dmClassStylesEnabled);
   ph.textContent = '';
   while (ph.firstChild) ph.removeChild(ph.firstChild);
-  ph.style.flexDirection = '';
-  ph.style.gap = '';
-  ph.style.padding = '';
-  ph.style.textAlign = '';
+  ph.classList.remove('dm-embed-preview');
+  if (!useClassStyles) {
+    ph.style.flexDirection = '';
+    ph.style.gap = '';
+    ph.style.padding = '';
+    ph.style.textAlign = '';
+  }
   ph.title = 'TAP FOR LB ' + item.embedType;
   const previewLines = getEmbedPreviewLines(item);
   if (previewLines && previewLines.length) {
-    ph.style.flexDirection = 'column';
-    ph.style.gap = '4px';
-    ph.style.padding = '10px 8px';
-    ph.style.textAlign = 'center';
+    if (useClassStyles) {
+      ph.classList.add('dm-embed-preview');
+    } else {
+      ph.style.flexDirection = 'column';
+      ph.style.gap = '4px';
+      ph.style.padding = '10px 8px';
+      ph.style.textAlign = 'center';
+    }
     previewLines.forEach(function(line, idx) {
       const row = document.createElement('div');
       row.textContent = line;
-      row.style.maxWidth = '100%';
-      row.style.overflowWrap = 'anywhere';
-      row.style.lineHeight = '1.3';
-      row.style.color = idx === 0 ? '#d0d0d0' : '#9a9a9a';
-      row.style.fontSize = idx === 0 ? '12px' : '10px';
-      row.style.fontWeight = idx === 0 ? '700' : '500';
+      if (useClassStyles) {
+        row.className = 'dm-preview-row ' + (idx === 0 ? 'dm-preview-primary' : 'dm-preview-secondary');
+        if (idx === 0) row.style.color = '#d0d0d0';
+      } else {
+        row.style.maxWidth = '100%';
+        row.style.overflowWrap = 'anywhere';
+        row.style.lineHeight = '1.3';
+        row.style.color = idx === 0 ? '#d0d0d0' : '#9a9a9a';
+        row.style.fontSize = idx === 0 ? '12px' : '10px';
+        row.style.fontWeight = idx === 0 ? '700' : '500';
+      }
       ph.appendChild(row);
     });
     return;
@@ -4714,6 +5113,7 @@ function createCard(item) {
 
   item.__thumbPreview = false;
   let needsThumbOverlay = false;
+  const useClassStyles = !!(state.cfg.dmThemeTokensEnabled && state.cfg.dmClassStylesEnabled);
   const appendThumbImage = function(src, overlayMode) {
     if (!src) return null;
     const img = document.createElement('img');
@@ -4721,12 +5121,14 @@ function createCard(item) {
     img.src = BLANK_GIF;
     img.dataset.src = src;
     img.alt = '';
-    img.style.display = 'block';
     img.style.width = '100%';
     img.style.height = th + 'px';
-    img.style.objectFit = 'contain';
-    img.style.objectPosition = 'center';
-    img.style.background = '#000';
+    if (!useClassStyles) {
+      img.style.display = 'block';
+      img.style.objectFit = 'contain';
+      img.style.objectPosition = 'center';
+      img.style.background = '#000';
+    }
     img.style.opacity = '0';
     if (overlayMode) {
       img.style.position = 'absolute';
@@ -4934,6 +5336,7 @@ function createCard(item) {
   item.card = card;
   updateDupBadge(item);
   item.__renderUrl = (item.kind === 'img') ? getDisplayUrl(item) : item.url;
+  if (item.kind !== 'img') releaseSourceEl(item, 'card');
   return card;
 }
 
@@ -5320,6 +5723,7 @@ function preloadLightboxNeighbors(token) {
 function renderLightboxItem() {
   const item = state.lb.list[state.lb.index];
   if (!item) return;
+  perfCount('lb.render');
   if (state.lb.overlay) {
     state.lb.overlay.dataset.kind = item.kind || '';
     if (item.embedType) {
@@ -5382,7 +5786,9 @@ function renderLightboxItem() {
         '<meta charset="utf-8">',
         '<meta name="referrer" content="no-referrer">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        '<style>html,body{margin:0;height:100%;background:#000}video{width:100%;height:100%;object-fit:contain}</style>',
+        '<style>',
+        state.cfg.dmEmbedSurfaceEnabled ? ':root{color-scheme:dark}' : '',
+        'html,body{margin:0;height:100%;background:#000}video{width:100%;height:100%;object-fit:contain}</style>',
         '</head><body>',
         '<video controls playsinline webkit-playsinline preload="metadata" src="', safeUrl, '"></video>',
         '<a href="', safeUrl, '" target="_blank" rel="noopener noreferrer" style="position:fixed;bottom:6px;right:8px;color:#9cf;font-size:11px;text-decoration:none;opacity:0.7">Open</a>',
@@ -5428,6 +5834,8 @@ function renderLightboxItem() {
       if (!isLightboxTokenCurrent(token)) return;
       if (videoSuccess) return;
       videoSuccess = true;
+      perfCount('lb.video.success');
+      perfMarkOnce('lb.firstReveal');
       videoFailCandidate = null;
       clearVideoFailTimer();
       clearNoSourceTimer();
@@ -5436,6 +5844,7 @@ function renderLightboxItem() {
     };
     const showVideoFail = function(info) {
       if (!isLightboxTokenCurrent(token)) return;
+      perfCount('lb.video.error');
       state.lb.badge.textContent = 'VIDEO FAIL\n' + info;
       state.lb.badge.title = info;
       state.lb.badge.setAttribute('aria-label', 'VIDEO FAIL ' + info);
@@ -5513,6 +5922,8 @@ function renderLightboxItem() {
     });
     if (item.poster) v.poster = item.poster;
     state.lb.frame.appendChild(v);
+    perfCount('lb.video.start');
+    perfMarkOnce('lb.firstStart');
     requestAnimationFrame(function() {
       v.src = item.url;
       try { v.load(); } catch (e) {}
@@ -5537,6 +5948,7 @@ function renderLightboxItem() {
     const auto = isAutoEmbedItem(item);
     const showEmbedFail = function() {
       if (!isLightboxTokenCurrent(token)) return;
+      perfCount('lb.embed.error');
       state.lb.badge.textContent = 'EMBED FAIL';
       state.lb.badge.style.display = 'block';
     };
@@ -5551,6 +5963,8 @@ function renderLightboxItem() {
       showEmbedFail();
     });
     state.lb.frame.appendChild(iframe);
+    perfCount('lb.embed.start');
+    perfMarkOnce('lb.firstStart');
     if (src && auto) {
       const et = (item.embedType || '').toUpperCase();
       if (et === 'TT') {
@@ -5579,6 +5993,8 @@ function renderLightboxItem() {
     overlay.style.opacity = '0';
     state.lb.frame.appendChild(img);
     state.lb.frame.appendChild(overlay);
+    perfCount('lb.image.start');
+    perfMarkOnce('lb.firstStart');
     let retries = 0;
     let done = false;
     let timer = 0;
@@ -5654,6 +6070,8 @@ function renderLightboxItem() {
       if (state.lb.__token !== token) return;
       hideLbOverlay();
       img.style.opacity = '1';
+      perfCount('lb.image.reveal');
+      perfMarkOnce('lb.firstReveal');
       queueRepaint(img);
       if (state.env && state.env.isIOS) {
         const nudged = img.dataset ? img.dataset.fmpNudged : img.getAttribute('data-fmp-nudged');
@@ -5672,6 +6090,7 @@ function renderLightboxItem() {
       if (done) return;
       if (state.lb.__token !== token) return;
       hideLbOverlay();
+      perfCount('lb.image.error');
       state.lb.badge.textContent = 'LOAD FAIL';
       state.lb.badge.style.display = 'block';
       markLbProgress(token);
@@ -6316,6 +6735,8 @@ function scheduleApplyFilterSort(reason) {
 }
 
 function flushRender() {
+  const renderStartedAt = perfStart('render.flush');
+  perfCount('render.flush');
   state.items.renderScheduled = false;
   const frag = document.createDocumentFragment();
   const newCards = [];
@@ -6331,6 +6752,8 @@ function flushRender() {
   }
   compactRenderQueue();
   state.ui.grid.appendChild(frag);
+  perfCount('render.items', newCards.length);
+  if (newCards.length) perfMarkOnce('card.firstAppended');
   let scanRequested = false;
   if (newCards.length) {
     newCards.forEach(function(card) { observeThumbCard(card); });
@@ -6358,6 +6781,7 @@ function flushRender() {
     }
     applyFilterSort();
   }
+  perfEnd('render.flush', renderStartedAt);
 }
 
 function preconnect() {
@@ -6707,47 +7131,69 @@ function flashLogButton() {
 function showCopyModal(text) {
   const wrap = state.ui.wrap;
   if (!wrap) return;
+  const useClassStyles = !!(state.cfg.dmThemeTokensEnabled && state.cfg.dmClassStylesEnabled);
   const existing = wrap.querySelector('.copy-modal');
   if (existing) existing.parentNode.removeChild(existing);
   const modal = document.createElement('div');
   modal.className = 'copy-modal';
-  modal.style.position = 'fixed';
-  modal.style.inset = '0';
-  modal.style.display = 'flex';
-  modal.style.alignItems = 'center';
-  modal.style.justifyContent = 'center';
-  modal.style.background = 'rgba(0,0,0,0.6)';
-  modal.style.zIndex = '2147483647';
+  if (useClassStyles) {
+    modal.classList.add('dm-copy-modal');
+    modal.style.background = 'rgba(0,0,0,0.6)';
+  } else {
+    modal.style.position = 'fixed';
+    modal.style.inset = '0';
+    modal.style.display = 'flex';
+    modal.style.alignItems = 'center';
+    modal.style.justifyContent = 'center';
+    modal.style.background = 'rgba(0,0,0,0.6)';
+    modal.style.zIndex = '2147483647';
+  }
   const box = document.createElement('div');
-  box.style.width = '90vw';
-  box.style.maxWidth = '720px';
-  box.style.background = '#111';
-  box.style.border = '1px solid #444';
-  box.style.borderRadius = '14px';
-  box.style.padding = '12px';
-  box.style.color = '#eee';
+  if (useClassStyles) {
+    box.className = 'dm-copy-box';
+  } else {
+    box.style.width = '90vw';
+    box.style.maxWidth = '720px';
+    box.style.background = '#111';
+    box.style.border = '1px solid #444';
+    box.style.borderRadius = '14px';
+    box.style.padding = '12px';
+    box.style.color = '#eee';
+  }
   const label = document.createElement('div');
   label.textContent = '長押しでコピー';
-  label.style.fontSize = '12px';
-  label.style.marginBottom = '8px';
+  if (useClassStyles) {
+    label.className = 'dm-copy-label';
+  } else {
+    label.style.fontSize = '12px';
+    label.style.marginBottom = '8px';
+  }
   const ta = document.createElement('textarea');
   ta.value = text;
   ta.readOnly = true;
-  ta.style.width = '100%';
-  ta.style.height = '40vh';
-  ta.style.background = '#0b0b0b';
-  ta.style.color = '#eee';
-  ta.style.border = '1px solid #333';
-  ta.style.borderRadius = '10px';
-  ta.style.padding = '8px';
+  if (useClassStyles) {
+    ta.className = 'dm-copy-textarea';
+  } else {
+    ta.style.width = '100%';
+    ta.style.height = '40vh';
+    ta.style.background = '#0b0b0b';
+    ta.style.color = '#eee';
+    ta.style.border = '1px solid #333';
+    ta.style.borderRadius = '10px';
+    ta.style.padding = '8px';
+  }
   const closeBtn = document.createElement('button');
   closeBtn.textContent = '閉じる';
-  closeBtn.style.marginTop = '10px';
-  closeBtn.style.padding = '8px 14px';
-  closeBtn.style.borderRadius = '999px';
-  closeBtn.style.border = '1px solid #555';
-  closeBtn.style.background = '#fff';
-  closeBtn.style.color = '#111';
+  if (useClassStyles) {
+    closeBtn.className = 'dm-copy-close';
+  } else {
+    closeBtn.style.marginTop = '10px';
+    closeBtn.style.padding = '8px 14px';
+    closeBtn.style.borderRadius = '999px';
+    closeBtn.style.border = '1px solid #555';
+    closeBtn.style.background = '#fff';
+    closeBtn.style.color = '#111';
+  }
   closeBtn.addEventListener('click', function() {
     if (modal.parentNode) modal.parentNode.removeChild(modal);
   });
@@ -7246,8 +7692,12 @@ function scheduleDomRescan(reason, root) {
 
 function runDomRescanOnce(reason) {
   if (state.abort && state.abort.aborted) return;
+  const moRescanStartedAt = perfStart('mo.rescan');
+  perfCount('mo.rescan');
   const before = state.items.list.length;
   const roots = (!state.mo.full && state.mo.roots && state.mo.roots.length) ? compactDomRescanRoots(state.mo.roots) : null;
+  perfCount('mo.roots', roots ? roots.length : 0);
+  perfCount(roots && roots.length ? 'mo.partial' : 'mo.full');
   state.mo.roots = [];
   state.mo.rootSet = null;
   state.mo.full = false;
@@ -7264,6 +7714,7 @@ function runDomRescanOnce(reason) {
     state.log.push('mo', 'rescan dom reason=' + (reason || '') + ' scope=' + (roots ? ('partial:' + roots.length) : 'full') + ' added=+' + added + ' total=' + after);
   }
   updateInfo();
+  perfEnd('mo.rescan', moRescanStartedAt);
 }
 
 function setupMutationObserver() {
@@ -7306,24 +7757,73 @@ function setupMutationObserver() {
   try {
     state.mo.obs = new MutationObserver(function(mutations) {
       if (!mutations || !mutations.length) return;
+      const moCallbackStartedAt = perfStart('mo.callback');
+      perfCount('mo.callback');
+      perfCount('mo.rawRecords', mutations.length);
       const maxMut = state.cfg.moMaxMutations || 0;
-      if (maxMut && mutations.length > maxMut) {
-        scheduleDomRescan('burst');
+      if (!state.cfg.moBatchRoots) {
+        if (maxMut && mutations.length > maxMut) {
+          perfCount('mo.burst');
+          scheduleDomRescan('burst');
+          perfEnd('mo.callback', moCallbackStartedAt);
+          return;
+        }
+        let reason = '';
+        let root = null;
+        for (let i = 0; i < mutations.length; i += 1) {
+          const m = mutations[i];
+          if (m.type === 'childList') {
+            const nodes = m.addedNodes || [];
+            for (let j = 0; j < nodes.length; j += 1) {
+              const r = findReasonFromNode(nodes[j]);
+              if (r) {
+                reason = r;
+                root = nodes[j] && nodes[j].nodeType === 1 ? nodes[j] : null;
+                break;
+              }
+            }
+          } else if (m.type === 'attributes') {
+            const name = m.attributeName || '';
+            const t = m.target;
+            if (t && t.nodeType === 1) {
+              if (name && t.getAttribute) {
+                const oldValue = m.oldValue == null ? '' : String(m.oldValue);
+                const newValue = String(t.getAttribute(name) || '');
+                if (oldValue === newValue) continue;
+              }
+              if (isSelfMutationNode(t)) continue;
+              const tr = reasonFromTag(t.tagName);
+              if (tr && name) {
+                reason = 'attr-' + name;
+                root = t;
+              }
+            }
+          }
+          if (reason) break;
+        }
+        if (reason) {
+          perfCount('mo.relevant');
+          if (root) perfCount('mo.relevantRoot');
+          scheduleDomRescan(reason, root);
+        }
+        perfEnd('mo.callback', moCallbackStartedAt);
         return;
       }
+
       let reason = '';
-      let root = null;
+      let relevantCount = 0;
       for (let i = 0; i < mutations.length; i += 1) {
         const m = mutations[i];
         if (m.type === 'childList') {
           const nodes = m.addedNodes || [];
           for (let j = 0; j < nodes.length; j += 1) {
-            const r = findReasonFromNode(nodes[j]);
-            if (r) {
-              reason = r;
-              root = nodes[j] && nodes[j].nodeType === 1 ? nodes[j] : null;
-              break;
-            }
+            const node = nodes[j];
+            const r = findReasonFromNode(node);
+            if (!r) continue;
+            relevantCount += 1;
+            if (!reason) reason = r;
+            if (node && node.nodeType === 1) queueDomRescanRoot(node);
+            else state.mo.full = true;
           }
         } else if (m.type === 'attributes') {
           const name = m.attributeName || '';
@@ -7337,14 +7837,25 @@ function setupMutationObserver() {
             if (isSelfMutationNode(t)) continue;
             const tr = reasonFromTag(t.tagName);
             if (tr && name) {
-              reason = 'attr-' + name;
-              root = t;
+              relevantCount += 1;
+              if (!reason) reason = 'attr-' + name;
+              queueDomRescanRoot(t);
             }
           }
         }
-        if (reason) break;
       }
-      if (reason) scheduleDomRescan(reason, root);
+      if (relevantCount) {
+        perfCount('mo.relevant', relevantCount);
+        if (state.mo.full) {
+          perfCount('mo.fullFallback');
+          scheduleDomRescan(reason || 'batch', null);
+        } else {
+          perfCount('mo.relevantRoot', state.mo.roots ? state.mo.roots.length : 0);
+          const queuedRoot = state.mo.roots && state.mo.roots.length ? state.mo.roots[0] : null;
+          scheduleDomRescan(reason || 'batch', queuedRoot);
+        }
+      }
+      perfEnd('mo.callback', moCallbackStartedAt);
     });
     state.mo.obs.observe(target, {
       childList: true,
@@ -7369,6 +7880,7 @@ async function main() {
     guardAndCleanup();
     initEnv();
     initCfg();
+    perfMarkOnce('run.start');
     initLogger();
     state.log.push('boot', 'href=' + state.env.href + ' host=' + state.env.host + ' ua=' + state.env.ua);
     state.log.push('device', 'iphone=' + state.env.isIPhone + ' ipad=' + state.env.isIPad);
@@ -7376,6 +7888,7 @@ async function main() {
     mountShell(0);
     (function waitForUiLock(tries) {
       if (isUiVisible(state)) {
+        perfMarkOnce('shell.visible');
         lockPage(state);
         return;
       }
@@ -7385,6 +7898,7 @@ async function main() {
     })(0);
     setTimeout(function() {
       if (isUiVisible(state)) {
+        perfMarkOnce('shell.visible');
         lockPage(state);
         return;
       }
@@ -7408,10 +7922,20 @@ async function main() {
     startWatchdog();
 
     const needByCount = state.items.list.length < state.cfg.htmlMinItems;
-    const bodyLinks = countBodySameOriginLinks(document, location.href);
+    const crawlBootstrap = state.cfg.crawlBootstrapCollect
+      ? collectCrawlBootstrap(document, location.href)
+      : null;
+    if (crawlBootstrap) state.crawl.bootstrap = crawlBootstrap;
+    const bodyLinks = crawlBootstrap
+      ? crawlBootstrap.bodySameOriginCount
+      : countBodySameOriginLinks(document, location.href);
     const imgCount = countImageCandidates();
-    const linkCandidates = collectCrawlLinksFromDocument(document, location.href);
-    const pagerPlan = buildPagerPlan(location.href, document);
+    const linkCandidates = crawlBootstrap
+      ? crawlBootstrap.links
+      : collectCrawlLinksFromDocument(document, location.href);
+    const pagerPlan = crawlBootstrap
+      ? crawlBootstrap.pagerPlan
+      : buildPagerPlan(location.href, document);
     const hasLinks = linkCandidates.length > 0;
     const mediaDoc = isMediaDocument(document);
     const lightCrawl = hasLinks && !mediaDoc;
