@@ -362,9 +362,15 @@ javascript:(function(){
 /* rev2.1.2:
  * add a measured Light DOM root-ID selector branch for F4/F5 inbound cascade hardening while preserving D5A, Shadow DOM, and declarations
  */
+/* rev2.1.3:
+ * enforce streamed crawl byte caps, release completed source DOM references, prioritize current Lightbox images over neighbor preloads, and make connection hints demand-driven by detected media origins
+ */
+/* rev2.1.4:
+ * improve gallery ergonomics with a one-line filter rail and counts, 44px touch targets, Lightbox position/detail UI, image swipe navigation, keyboard/modal focus behavior, and ARIA state without changing media collection or crawl scope
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '2.1.2';
+const SCRIPT_REV = '2.1.4';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 const state = {
@@ -439,6 +445,13 @@ const state = {
     media: null,
     caption: null,
     openBtn: null,
+    closeBtn: null,
+    infoBtn: null,
+    counter: null,
+    infoPanel: null,
+    infoOpen: false,
+    invoker: null,
+    onKeyDown: null,
     badge: null,
     __preloadCtxs: [],
     __preloadKey: ''
@@ -1210,7 +1223,7 @@ function initCfg() {
     crawlArticleMaxPages: 30,
     crawlBootstrapCollect: false,
     crawlBootstrapReuse: false,
-    releaseSourceEl: false,
+    releaseSourceEl: true,
     progressStaleMs: 1500,
     embedHeight: 360,
     strictBodyOnly: true,
@@ -1228,6 +1241,7 @@ function initCfg() {
     dmEmbedSurfaceEnabled: true,
     perfEnabled: false,
     debug: false,
+    preconnectMax: 4,
     preconnectHosts: [
       'https://i.imgur.com',
       'https://imgur.com',
@@ -1670,18 +1684,54 @@ function passesSize(item) {
   return true;
 }
 
-function passesFilter(item) {
-  const key = state.filter.key || 'ALL';
-  if (key === 'ALL') return true;
-  if (key === 'BODY') return item.scope === 'body';
-  if (key === 'IMG') return item.kind === 'img';
-  if (key === 'VIDEO') return item.kind === 'video';
-  if (key === 'X') return item.kind === 'embed' && item.embedType === 'X';
-  if (key === 'INSTA') return item.embedType === 'INSTA';
-  if (key === 'IMGUR') return item.kind === 'embed' && item.embedType === 'IMGUR';
-  if (key === 'YT') return item.kind === 'embed' && item.embedType === 'YT';
-  if (key === 'TT') return item.kind === 'embed' && item.embedType === 'TT';
+function matchesFilterKey(item, key) {
+  const k = key || 'ALL';
+  if (k === 'ALL') return true;
+  if (k === 'BODY') return item.scope === 'body';
+  if (k === 'IMG') return item.kind === 'img';
+  if (k === 'VIDEO') return item.kind === 'video';
+  if (k === 'X') return item.kind === 'embed' && item.embedType === 'X';
+  if (k === 'INSTA') return item.embedType === 'INSTA';
+  if (k === 'IMGUR') return item.kind === 'embed' && item.embedType === 'IMGUR';
+  if (k === 'YT') return item.kind === 'embed' && item.embedType === 'YT';
+  if (k === 'TT') return item.kind === 'embed' && item.embedType === 'TT';
   return true;
+}
+
+function passesFilter(item) {
+  return matchesFilterKey(item, state.filter.key || 'ALL');
+}
+
+function collectFilterCounts() {
+  const counts = {
+    ALL: 0,
+    BODY: 0,
+    IMG: 0,
+    VIDEO: 0,
+    X: 0,
+    INSTA: 0,
+    IMGUR: 0,
+    YT: 0,
+    TT: 0
+  };
+  state.items.list.forEach(function(item) {
+    if (!item) return;
+    if (item.__hashDup || item.__failed) return;
+    if (state.cfg.noiseHide && item.__isNoise) return;
+    if (state.cfg.hiddenHide && (item.__allHidden || item.__autoHidden)) return;
+    counts.ALL += 1;
+    if (item.scope === 'body') counts.BODY += 1;
+    if (item.kind === 'img') counts.IMG += 1;
+    if (item.kind === 'video') counts.VIDEO += 1;
+    if (item.embedType === 'INSTA') counts.INSTA += 1;
+    if (item.kind === 'embed') {
+      if (item.embedType === 'X') counts.X += 1;
+      if (item.embedType === 'IMGUR') counts.IMGUR += 1;
+      if (item.embedType === 'YT') counts.YT += 1;
+      if (item.embedType === 'TT') counts.TT += 1;
+    }
+  });
+  return counts;
 }
 
 function applyFilterSort() {
@@ -1712,16 +1762,29 @@ function applyFilterSort() {
 function updateChipUI() {
   if (!state.ui.filterBar) return;
   const f = state.filter.key;
+  const counts = collectFilterCounts();
   Array.from(state.ui.filterBar.querySelectorAll('[data-filter]')).forEach(function(btn) {
-    btn.classList.toggle('active', btn.getAttribute('data-filter') === f);
+    const key = btn.getAttribute('data-filter') || 'ALL';
+    const active = key === f;
+    const baseLabel = (btn.dataset && btn.dataset.baseLabel) ? btn.dataset.baseLabel : key;
+    const count = counts[key] || 0;
+    const label = baseLabel + ' ' + count;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    if (btn.textContent !== label) btn.textContent = label;
+    if (btn.getAttribute('aria-label') !== label) btn.setAttribute('aria-label', label);
   });
   const boostBtn = state.ui.filterBar.querySelector('[data-action="boost-crawl"]');
   if (boostBtn) {
-    boostBtn.classList.toggle('active', !!state.crawl.allowUserBoost);
+    const active = !!state.crawl.allowUserBoost;
+    boostBtn.classList.toggle('active', active);
+    boostBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
   }
   const hiddenBtn = state.ui.filterBar.querySelector('[data-action="toggle-hidden"]');
   if (hiddenBtn) {
-    hiddenBtn.classList.toggle('active', !state.cfg.hiddenHide);
+    const active = !state.cfg.hiddenHide;
+    hiddenBtn.classList.toggle('active', active);
+    hiddenBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
   }
 }
 
@@ -2999,8 +3062,9 @@ function canStreamResponse(res) {
   return !!(res && res.body && typeof res.body.getReader === 'function' && typeof TextDecoder === 'function');
 }
 
-async function readResponseTextLimited(res, maxChars) {
+async function readResponseTextLimited(res, maxChars, maxBytes) {
   const limit = Math.max(1, maxChars || 300000);
+  const byteLimit = Math.max(0, maxBytes || 0);
   if (!canStreamResponse(res)) {
     const text = await res.text();
     return String(text || '').slice(0, limit);
@@ -3008,19 +3072,38 @@ async function readResponseTextLimited(res, maxChars) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let text = '';
+  let totalBytes = 0;
+  let cappedByBytes = false;
   try {
     while (text.length < limit) {
       const chunk = await reader.read();
       if (!chunk || chunk.done) break;
-      text += decoder.decode(chunk.value, { stream: true });
+      const value = chunk.value;
+      if (value) {
+        totalBytes += Number(value.byteLength || value.length || 0);
+      }
+      if (byteLimit && totalBytes > byteLimit) {
+        cappedByBytes = true;
+        try { await reader.cancel('fmp-byte-cap'); } catch (e) {}
+        break;
+      }
+      text += decoder.decode(value, { stream: true });
       if (text.length >= limit) {
-        try { reader.cancel(); } catch (e) {}
+        try { await reader.cancel('fmp-char-cap'); } catch (e) {}
         break;
       }
     }
     text += decoder.decode();
   } catch (e) {
-    try { reader.cancel(); } catch (e2) {}
+    try { await reader.cancel(); } catch (e2) {}
+  } finally {
+    try { reader.releaseLock(); } catch (e) {}
+  }
+  if (cappedByBytes) {
+    perfCount('crawl.byteCap');
+    if (state.log && state.log.push) {
+      state.log.push('crawl', 'stream byte cap bytes=' + totalBytes + ' limit=' + byteLimit);
+    }
   }
   return text.slice(0, limit);
 }
@@ -3055,7 +3138,7 @@ async function crawlFetch(url) {
       state.log.push('crawl', 'skip huge html ' + url + ' bytes=' + contentLength);
       return;
     }
-    const html = await readResponseTextLimited(res, state.cfg.maxHtmlChars);
+    const html = await readResponseTextLimited(res, state.cfg.maxHtmlChars, maxBytes);
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const items = extractFromDocument(doc, 'crawl', url);
     if (!items.length) {
@@ -3255,11 +3338,12 @@ function createShell() {
     :where(.fmp-css-scope) .title { font-size: calc(16px * var(--ui-scale)); font-weight: 700; letter-spacing: 0.02em; }
     :where(.fmp-css-scope) .btns { display: flex; gap: 6px; }
     :where(.fmp-css-scope) .btn,
-    #__fmp_root__ :where(.fmp-css-scope) .btn { font-size: calc(12px * var(--ui-scale)); padding: calc(6px * var(--ui-scale)) calc(10px * var(--ui-scale)); border: 1px solid var(--fmp-border, #555); background: var(--fmp-control-bg, #111); color: var(--fmp-text, #eee); border-radius: 999px; }
+    #__fmp_root__ :where(.fmp-css-scope) .btn { min-width: 44px; min-height: 44px; font-size: calc(12px * var(--ui-scale)); padding: calc(6px * var(--ui-scale)) calc(10px * var(--ui-scale)); border: 1px solid var(--fmp-border, #555); background: var(--fmp-control-bg, #111); color: var(--fmp-text, #eee); border-radius: 999px; }
     :where(.fmp-css-scope) .btn.danger { background: var(--fmp-accent, #fff); color: var(--fmp-text-on-accent, #111); border-color: var(--fmp-accent, #fff); }
-    :where(.fmp-css-scope) .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    :where(.fmp-css-scope) .chips { display: flex; flex-wrap: nowrap; gap: 6px; overflow-x: auto; overflow-y: hidden; flex: 0 0 auto; max-width: 100%; padding-bottom: 2px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+    :where(.fmp-css-scope) .chips::-webkit-scrollbar { display: none; }
     :where(.fmp-css-scope) .chip,
-    #__fmp_root__ :where(.fmp-css-scope) .chip { font-size: calc(11px * var(--ui-scale)); padding: calc(6px * var(--ui-scale)) calc(10px * var(--ui-scale)); border-radius: 999px; border: 1px solid var(--fmp-border, #555); background: var(--fmp-control-bg, #111); color: var(--fmp-text, #eee); }
+    #__fmp_root__ :where(.fmp-css-scope) .chip { flex: 0 0 auto; min-height: 44px; font-size: calc(11px * var(--ui-scale)); padding: calc(6px * var(--ui-scale)) calc(10px * var(--ui-scale)); border-radius: 999px; border: 1px solid var(--fmp-border, #555); background: var(--fmp-control-bg, #111); color: var(--fmp-text, #eee); }
     :where(.fmp-css-scope) .chip.active { background: var(--fmp-accent, #fff); color: var(--fmp-text-on-accent, #111); border-color: var(--fmp-accent, #fff); }
     :where(.fmp-css-scope) .chip-page { font-size: calc(10px * var(--ui-scale)); padding: calc(3px * var(--ui-scale)) calc(6px * var(--ui-scale)); border-radius: 999px; border: 1px solid var(--fmp-border-soft, #444); background: var(--fmp-control-bg, #111); color: var(--fmp-text-muted, #bbb); }
     :where(.fmp-css-scope) .info { font-size: calc(12px * var(--ui-scale)); opacity: 0.75; color: var(--fmp-text-subtle, #cfcfcf); }
@@ -3399,7 +3483,10 @@ function createShell() {
     #__fmp_root__ :where(.fmp-css-scope) .inline { font-size: 11px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--fmp-border, #555); background: var(--fmp-control-bg, #111); color: var(--fmp-text, #eee); }
     :where(.fmp-css-scope) .lb { position: fixed; inset: 0; background: var(--fmp-panel-bg, rgba(0, 0, 0, 0.92)); display: none; align-items: center; justify-content: center; padding: calc(env(safe-area-inset-top) + 16px) 12px calc(env(safe-area-inset-bottom) + 16px); z-index: 2; pointer-events: auto; }
     :where(.fmp-css-scope) .lb.open { display: flex; }
-    :where(.fmp-css-scope) .lb-frame { max-width: 92vw; max-height: 78vh; border-radius: 16px; overflow: hidden; background: var(--fmp-bg, #000); display: flex; align-items: center; justify-content: center; position: relative; border: 2px solid var(--fmp-line-soft, rgba(255,255,255,0.16)); box-sizing: border-box; }
+    :where(.fmp-css-scope) .lb-counter { position: fixed; top: calc(env(safe-area-inset-top) + 10px); left: 50%; transform: translateX(-50%); min-height: 28px; padding: 5px 10px; border-radius: 999px; background: var(--fmp-overlay, rgba(0,0,0,0.55)); border: 1px solid var(--fmp-line-soft, rgba(255,255,255,0.16)); color: var(--fmp-text, #eee); font-size: 12px; font-variant-numeric: tabular-nums; display: flex; align-items: center; justify-content: center; pointer-events: none; z-index: 4; }
+    :where(.fmp-css-scope) .lb-info-panel { position: fixed; top: calc(env(safe-area-inset-top) + 48px); left: 12px; max-width: min(76vw, 420px); padding: 9px 11px; border-radius: 12px; background: var(--fmp-control-bg, #111); border: 1px solid var(--fmp-border-soft, #444); color: var(--fmp-text, #eee); font-size: 11px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; z-index: 4; }
+    :where(.fmp-css-scope) .lb-info-panel[hidden] { display: none; }
+    :where(.fmp-css-scope) .lb-frame { max-width: 92vw; max-height: 78vh; border-radius: 16px; overflow: hidden; background: var(--fmp-bg, #000); display: flex; align-items: center; justify-content: center; position: relative; border: 2px solid var(--fmp-line-soft, rgba(255,255,255,0.16)); box-sizing: border-box; touch-action: pan-y pinch-zoom; }
     :where(.fmp-css-scope) .lb[data-kind="embed"][data-etype="YT"] .lb-frame {
       border-color: transparent;
       border-image: linear-gradient(135deg, #ff0033 0%, #ff4e45 55%, #b2071d 100%) 1;
@@ -3427,7 +3514,8 @@ function createShell() {
     :where(.fmp-css-scope).wrap.is-iphone .lb-controls,
     :where(.fmp-css-scope).wrap.is-ipad .lb-controls { justify-content: flex-start; padding-left: calc(env(safe-area-inset-left) + 14px); padding-right: 0; }
     :where(.fmp-css-scope) .lb-btn,
-    #__fmp_root__ :where(.fmp-css-scope) .lb-btn { background: var(--fmp-accent, #fff); color: var(--fmp-text-on-accent, #111); border-radius: 999px; border: 0; padding: calc(8px * var(--lb-scale)) calc(14px * var(--lb-scale)); font-size: calc(12px * var(--lb-scale)); }
+    #__fmp_root__ :where(.fmp-css-scope) .lb-btn { min-width: 44px; min-height: 44px; background: var(--fmp-accent, #fff); color: var(--fmp-text-on-accent, #111); border-radius: 999px; border: 0; padding: calc(8px * var(--lb-scale)) calc(14px * var(--lb-scale)); font-size: calc(12px * var(--lb-scale)); }
+    :where(.fmp-css-scope) :is(.btn,.chip,.lb-btn):focus-visible { outline: 2px solid var(--fmp-accent, #fff); outline-offset: 2px; }
     :where(.fmp-css-scope) .lb-badge {
       position: absolute;
       top: 8px;
@@ -3484,17 +3572,25 @@ function createShell() {
 
   const filterBar = document.createElement('div');
   filterBar.className = 'chips';
+  filterBar.setAttribute('role', 'group');
+  filterBar.setAttribute('aria-label', 'メディアフィルター');
   ['BODY', 'IMG', 'VIDEO', 'X', 'INSTA', 'IMGUR', 'YT', 'TT', 'ALL'].forEach(function(key) {
     const label = (key === 'BODY') ? '本文' : key;
     const chip = mkBtn(label, 'chip');
     chip.setAttribute('data-filter', key);
+    chip.dataset.baseLabel = label;
+    chip.setAttribute('aria-pressed', 'false');
     filterBar.appendChild(chip);
   });
   const hiddenChip = mkBtn('非表示', 'chip');
   hiddenChip.setAttribute('data-action', 'toggle-hidden');
+  hiddenChip.setAttribute('aria-pressed', 'false');
+  hiddenChip.setAttribute('aria-label', '非表示画像の表示切替');
   filterBar.appendChild(hiddenChip);
   const boostChip = mkBtn('巡回+', 'chip');
   boostChip.setAttribute('data-action', 'boost-crawl');
+  boostChip.setAttribute('aria-pressed', 'false');
+  boostChip.setAttribute('aria-label', '巡回範囲を拡張');
   filterBar.appendChild(boostChip);
 
   const info = document.createElement('div');
@@ -3580,7 +3676,32 @@ function createShell() {
     if (state.log.copy) state.log.copy();
   });
 
+  let filterRailTouchX = 0;
+  let filterRailStartScrollLeft = 0;
+  let filterRailMoved = false;
+  filterBar.addEventListener('touchstart', function(ev) {
+    const t = ev.touches && ev.touches[0];
+    filterRailTouchX = t ? t.clientX : 0;
+    filterRailStartScrollLeft = filterBar.scrollLeft || 0;
+    filterRailMoved = false;
+  }, { passive: true });
+  filterBar.addEventListener('touchmove', function(ev) {
+    const t = ev.touches && ev.touches[0];
+    if (!t) return;
+    if (Math.abs(t.clientX - filterRailTouchX) > 8 ||
+        Math.abs((filterBar.scrollLeft || 0) - filterRailStartScrollLeft) > 4) {
+      filterRailMoved = true;
+    }
+  }, { passive: true });
+  filterBar.addEventListener('touchcancel', function() {
+    filterRailMoved = false;
+  }, { passive: true });
+
   bindUiTap(filterBar, function(ev) {
+    if (filterRailMoved) {
+      filterRailMoved = false;
+      return;
+    }
     const target = ev.target && ev.target.nodeType === 1 ? ev.target : (ev.target && ev.target.parentElement ? ev.target.parentElement : null);
     if (!target || !target.closest) return;
     const hiddenBtn = target.closest('[data-action="toggle-hidden"]');
@@ -5469,11 +5590,67 @@ function updateDupBadge(item) {
 }
 
 /* [12] lightbox */
+function formatLightboxInfo(item) {
+  if (!item) return '';
+  let host = item.host || '';
+  if (!host) {
+    try { host = new URL(item.openUrl || item.url || item.abs || '', location.href).hostname || ''; } catch (e) {}
+  }
+  const kind = item.kind === 'embed'
+    ? ((item.embedType || 'EMBED').toUpperCase())
+    : String(item.kind || '').toUpperCase();
+  const lines = [];
+  if (item.pageLabel) lines.push(item.pageLabel);
+  if (kind) lines.push(kind);
+  if (item.width && item.height) lines.push(item.width + ' × ' + item.height);
+  if (host) lines.push(host);
+  if ((item.dupCount || 1) > 1) lines.push('dup ×' + item.dupCount);
+  return lines.join('\n');
+}
+
+function updateLightboxChrome() {
+  const item = state.lb.list[state.lb.index];
+  if (state.lb.counter) {
+    const current = state.lb.list.length ? (state.lb.index + 1) : 0;
+    const text = current + ' / ' + state.lb.list.length;
+    state.lb.counter.textContent = text;
+    state.lb.counter.setAttribute('aria-label', 'メディア ' + current + ' / ' + state.lb.list.length);
+  }
+  if (state.lb.infoPanel) {
+    state.lb.infoPanel.textContent = formatLightboxInfo(item);
+    state.lb.infoPanel.hidden = !state.lb.infoOpen;
+  }
+  if (state.lb.infoBtn) {
+    state.lb.infoBtn.setAttribute('aria-expanded', state.lb.infoOpen ? 'true' : 'false');
+    state.lb.infoBtn.setAttribute('aria-label', state.lb.infoOpen ? '詳細を閉じる' : '詳細を表示');
+  }
+}
+
+function getLightboxFocusable() {
+  const lb = state.lb && state.lb.overlay;
+  if (!lb || !lb.querySelectorAll) return [];
+  return Array.from(lb.querySelectorAll('button:not([disabled]), a[href], iframe, video[controls], [tabindex]:not([tabindex="-1"])'))
+    .filter(function(el) {
+      if (!el || !el.isConnected) return false;
+      try {
+        const cs = getComputedStyle(el);
+        return cs.display !== 'none' && cs.visibility !== 'hidden' && el.getClientRects().length > 0;
+      } catch (e) {
+        return true;
+      }
+    });
+}
+
 function createLightbox() {
   const lb = document.createElement('div');
   lb.className = 'lb';
   lb.style.setProperty('z-index', '2', 'important');
   lb.style.setProperty('pointer-events', 'auto', 'important');
+  lb.setAttribute('role', 'dialog');
+  lb.setAttribute('aria-modal', 'true');
+  lb.setAttribute('aria-label', 'メディアビューア');
+  lb.tabIndex = -1;
+
   function bindLbTap(el, handler) {
     if (!el || typeof handler !== 'function') return;
     let lastTouchLikeTs = 0;
@@ -5499,8 +5676,10 @@ function createLightbox() {
     el.addEventListener('pointerup', onTap);
     el.addEventListener('touchend', onTap, { passive: false });
   }
+
   const frame = document.createElement('div');
   frame.className = 'lb-frame';
+
   const badge = document.createElement('div');
   badge.className = 'lb-badge';
   badge.textContent = '';
@@ -5526,17 +5705,45 @@ function createLightbox() {
     });
   }
   frame.appendChild(badge);
+
+  const counter = document.createElement('div');
+  counter.className = 'lb-counter';
+  counter.setAttribute('role', 'status');
+  counter.setAttribute('aria-live', 'polite');
+  counter.setAttribute('aria-atomic', 'true');
+  counter.textContent = '0 / 0';
+
+  const infoPanel = document.createElement('div');
+  infoPanel.className = 'lb-info-panel';
+  infoPanel.id = '__fmp_lb_info__';
+  infoPanel.hidden = true;
+
   const controls = document.createElement('div');
   controls.className = 'lb-controls';
+  controls.setAttribute('role', 'group');
+  controls.setAttribute('aria-label', 'Lightbox操作');
+
   const prevBtn = mkBtn('Prev', 'lb-btn');
   const nextBtn = mkBtn('Next', 'lb-btn');
-  const closeBtn = mkBtn('Close', 'lb-btn');
+  const infoBtn = mkBtn('ⓘ', 'lb-btn');
   const openBtn = mkBtn('↗', 'lb-btn');
+  const closeBtn = mkBtn('Close', 'lb-btn');
+  prevBtn.setAttribute('aria-label', '前のメディア');
+  nextBtn.setAttribute('aria-label', '次のメディア');
+  infoBtn.setAttribute('aria-label', '詳細を表示');
+  infoBtn.setAttribute('aria-controls', infoPanel.id);
+  infoBtn.setAttribute('aria-expanded', 'false');
+  openBtn.setAttribute('aria-label', '元ページを開く');
+  closeBtn.setAttribute('aria-label', 'Lightboxを閉じる');
+
   controls.appendChild(prevBtn);
   controls.appendChild(nextBtn);
+  controls.appendChild(infoBtn);
   controls.appendChild(openBtn);
   controls.appendChild(closeBtn);
 
+  lb.appendChild(counter);
+  lb.appendChild(infoPanel);
   lb.appendChild(frame);
   lb.appendChild(controls);
   state.ui.wrap.appendChild(lb);
@@ -5548,6 +5755,12 @@ function createLightbox() {
   bindLbTap(nextBtn, function(ev) {
     ev.preventDefault();
     moveLightbox(1);
+  });
+  bindLbTap(infoBtn, function(ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    state.lb.infoOpen = !state.lb.infoOpen;
+    updateLightboxChrome();
   });
   bindLbTap(closeBtn, function(ev) {
     ev.preventDefault();
@@ -5563,10 +5776,110 @@ function createLightbox() {
     if (ev.target === lb) closeLightbox();
   });
 
+  let swipeStart = null;
+  frame.addEventListener('touchstart', function(ev) {
+    swipeStart = null;
+    const item = state.lb.list[state.lb.index];
+    if (!state.lb.open || !item || item.kind !== 'img') return;
+    if (!ev.touches || ev.touches.length !== 1) return;
+    const target = ev.target && ev.target.nodeType === 1 ? ev.target : null;
+    if (target && target.closest && target.closest('.lb-badge')) return;
+    const t = ev.touches[0];
+    swipeStart = {
+      id: t.identifier,
+      x: t.clientX,
+      y: t.clientY,
+      at: Date.now()
+    };
+  }, { passive: true });
+
+  frame.addEventListener('touchend', function(ev) {
+    if (!swipeStart) return;
+    const start = swipeStart;
+    swipeStart = null;
+    const item = state.lb.list[state.lb.index];
+    if (!state.lb.open || !item || item.kind !== 'img') return;
+    const changed = ev.changedTouches || [];
+    let t = null;
+    for (let i = 0; i < changed.length; i += 1) {
+      if (changed[i].identifier === start.id) {
+        t = changed[i];
+        break;
+      }
+    }
+    if (!t) return;
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    const dt = Date.now() - start.at;
+    if (dt > 900) return;
+    if (Math.abs(dx) < 48) return;
+    if (Math.abs(dx) <= Math.abs(dy) * 1.25) return;
+    perfCount('lb.swipe');
+    moveLightbox(dx < 0 ? 1 : -1);
+  }, { passive: true });
+
+  frame.addEventListener('touchcancel', function() {
+    swipeStart = null;
+  }, { passive: true });
+
+  const onKeyDown = function(ev) {
+    if (!state.lb.open) return;
+    const target = ev.target && ev.target.nodeType === 1 ? ev.target : null;
+    const editable = !!(target && (
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT' ||
+      target.isContentEditable
+    ));
+
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeLightbox();
+      return;
+    }
+    if (!editable && ev.key === 'ArrowLeft') {
+      ev.preventDefault();
+      moveLightbox(-1);
+      return;
+    }
+    if (!editable && ev.key === 'ArrowRight') {
+      ev.preventDefault();
+      moveLightbox(1);
+      return;
+    }
+    if (ev.key !== 'Tab') return;
+
+    const focusable = getLightboxFocusable();
+    if (!focusable.length) {
+      ev.preventDefault();
+      try { lb.focus({ preventScroll: true }); } catch (e) { try { lb.focus(); } catch (e2) {} }
+      return;
+    }
+    const rootActive = state.ui.shadow && state.ui.shadow.activeElement
+      ? state.ui.shadow.activeElement
+      : document.activeElement;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (ev.shiftKey && (rootActive === first || rootActive === lb)) {
+      ev.preventDefault();
+      try { last.focus({ preventScroll: true }); } catch (e) { try { last.focus(); } catch (e2) {} }
+    } else if (!ev.shiftKey && rootActive === last) {
+      ev.preventDefault();
+      try { first.focus({ preventScroll: true }); } catch (e) { try { first.focus(); } catch (e2) {} }
+    }
+  };
+  lb.addEventListener('keydown', onKeyDown, true);
+
   state.lb.overlay = lb;
   state.lb.frame = frame;
   state.lb.badge = badge;
+  state.lb.counter = counter;
+  state.lb.infoPanel = infoPanel;
+  state.lb.infoBtn = infoBtn;
   state.lb.openBtn = openBtn;
+  state.lb.closeBtn = closeBtn;
+  state.lb.onKeyDown = onKeyDown;
 }
 
 function buildLightboxList() {
@@ -5579,11 +5892,19 @@ function openLightboxById(id) {
   buildLightboxList();
   const idx = state.lb.list.findIndex(function(it) { return it && it.id === id; });
   if (idx < 0) return;
+  const card = state.ui.grid ? state.ui.grid.querySelector('.card[data-id="' + id + '"]') : null;
+  state.lb.invoker = card ? (card.querySelector('.thumb') || card) : null;
   state.lb.index = idx;
+  state.lb.infoOpen = false;
   if (state.thumb) state.thumb.paused = true;
   renderLightboxItem();
   state.lb.overlay.classList.add('open');
   state.lb.open = true;
+  updateLightboxChrome();
+  requestAnimationFrame(function() {
+    const target = state.lb.closeBtn || state.lb.overlay;
+    try { target.focus({ preventScroll: true }); } catch (e) { try { target.focus(); } catch (e2) {} }
+  });
 }
 
 function moveLightbox(dir) {
@@ -5683,6 +6004,7 @@ function startLightboxImagePreload(item, dir, token) {
   };
 
   img.decoding = 'async';
+  img.fetchPriority = 'low';
   img.onload = function() {
     ctx.done = true;
   };
@@ -5737,6 +6059,7 @@ function renderLightboxItem() {
     state.wd.lbKickCount = 0;
   }
   state.lb.currentId = item.id;
+  updateLightboxChrome();
   const lbToken = resetLightboxLoad('switch');
   clearLightboxFrame();
   state.lb.badge.style.display = 'none';
@@ -5986,6 +6309,7 @@ function renderLightboxItem() {
     const img = document.createElement('img');
     img.alt = '';
     img.decoding = 'async';
+    img.fetchPriority = 'high';
     img.style.opacity = '0';
     const overlay = document.createElement('div');
     overlay.className = 'ph-load';
@@ -6243,11 +6567,14 @@ function renderVideoPoster(video, item, token) {
 
 function closeLightbox() {
   if (!state.lb.overlay) return;
+  const fallbackInvoker = state.lb.invoker;
   resetLightboxLoad('close');
   state.lb.overlay.classList.remove('open');
   state.lb.open = false;
+  state.lb.infoOpen = false;
   state.lb.__loading = false;
   state.lb.__ctx = null;
+  updateLightboxChrome();
   if (state.wd) state.wd.lbKickCount = 0;
   clearLightboxFrame();
   if (state.thumb) {
@@ -6255,8 +6582,10 @@ function closeLightbox() {
     thumbPump();
   }
   const id = state.lb.currentId;
+  let focusTarget = fallbackInvoker;
   if (id && state.ui.grid) {
     const card = state.ui.grid.querySelector('.card[data-id="' + id + '"]');
+    if (card) focusTarget = card.querySelector('.thumb') || card || focusTarget;
     if (card && typeof card.scrollIntoView === 'function') {
       requestAnimationFrame(function() {
         try {
@@ -6264,9 +6593,21 @@ function closeLightbox() {
           card.classList.add('is-current');
           setTimeout(function() { card.classList.remove('is-current'); }, 600);
         } catch (e) {}
+        if (focusTarget && focusTarget.isConnected && typeof focusTarget.focus === 'function') {
+          try { focusTarget.focus({ preventScroll: true }); } catch (e) { try { focusTarget.focus(); } catch (e2) {} }
+        }
+      });
+    } else if (focusTarget && focusTarget.isConnected && typeof focusTarget.focus === 'function') {
+      requestAnimationFrame(function() {
+        try { focusTarget.focus({ preventScroll: true }); } catch (e) { try { focusTarget.focus(); } catch (e2) {} }
       });
     }
+  } else if (focusTarget && focusTarget.isConnected && typeof focusTarget.focus === 'function') {
+    requestAnimationFrame(function() {
+      try { focusTarget.focus({ preventScroll: true }); } catch (e) { try { focusTarget.focus(); } catch (e2) {} }
+    });
   }
+  state.lb.invoker = null;
   if (typeof window.__FMP_ON_LB_CLOSE__ === 'function') {
     try { window.__FMP_ON_LB_CLOSE__(); } catch (e) {}
   }
@@ -6786,21 +7127,100 @@ function flushRender() {
 
 function preconnect() {
   const head = document.head || document.documentElement;
-  if (!head || !head.querySelector || !head.appendChild) return;
-  state.cfg.preconnectHosts.forEach(function(host) {
+  if (!head || !head.querySelectorAll || !head.appendChild) return;
+
+  const allowed = new Set();
+  (state.cfg.preconnectHosts || []).forEach(function(host) {
     if (!host) return;
-    const existing = head.querySelector('link[rel="preconnect"][href="' + host + '"]');
-    if (existing) return;
-    const link = document.createElement('link');
-    link.rel = 'preconnect';
-    link.href = host;
-    link.crossOrigin = '';
-    head.appendChild(link);
-    const dns = document.createElement('link');
-    dns.rel = 'dns-prefetch';
-    dns.href = host;
-    head.appendChild(dns);
+    try { allowed.add(new URL(host, location.href).origin); } catch (e) {}
   });
+  if (!allowed.size) return;
+
+  const counts = new Map();
+  const firstSeen = new Map();
+  let seq = 0;
+  const countOrigin = function(origin) {
+    if (!origin || !allowed.has(origin)) return;
+    if (!counts.has(origin)) firstSeen.set(origin, seq++);
+    counts.set(origin, (counts.get(origin) || 0) + 1);
+  };
+
+  (state.items.list || []).forEach(function(item) {
+    if (!item) return;
+    const perItem = new Set();
+    const addUrl = function(raw) {
+      if (!raw) return;
+      try {
+        const u = new URL(String(raw), location.href);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+        if (allowed.has(u.origin)) perItem.add(u.origin);
+      } catch (e) {}
+    };
+    addUrl(item.abs);
+    addUrl(item.url);
+    addUrl(item.openUrl);
+    addUrl(item.poster);
+    addUrl(item.embedUrl);
+    try {
+      if (item.kind === 'img') addUrl(getDisplayUrl(item));
+      if (item.kind === 'embed') {
+        const thumbs = getEmbedThumbUrls(item);
+        if (thumbs && thumbs.length) thumbs.forEach(addUrl);
+      }
+    } catch (e) {}
+    perItem.forEach(countOrigin);
+  });
+
+  const origins = Array.from(counts.keys()).sort(function(a, b) {
+    const byCount = (counts.get(b) || 0) - (counts.get(a) || 0);
+    if (byCount) return byCount;
+    return (firstSeen.get(a) || 0) - (firstSeen.get(b) || 0);
+  });
+  if (!origins.length) return;
+
+  const hasHint = function(rel, origin) {
+    try {
+      const links = head.querySelectorAll('link[rel="' + rel + '"]');
+      for (let i = 0; i < links.length; i += 1) {
+        const href = links[i] && links[i].href ? links[i].href : '';
+        if (!href) continue;
+        try {
+          if (new URL(href, location.href).origin === origin) return true;
+        } catch (e) {}
+      }
+    } catch (e) {}
+    return false;
+  };
+
+  const addHint = function(rel, origin) {
+    if (hasHint(rel, origin)) return false;
+    const link = document.createElement('link');
+    link.rel = rel;
+    link.href = origin;
+    if (rel === 'preconnect') link.crossOrigin = '';
+    head.appendChild(link);
+    return true;
+  };
+
+  const maxPreconnect = Math.max(0, state.cfg.preconnectMax || 0);
+  const connected = [];
+  const dnsOnly = [];
+  origins.forEach(function(origin, index) {
+    if (index < maxPreconnect) {
+      addHint('preconnect', origin);
+      connected.push(origin);
+      return;
+    }
+    addHint('dns-prefetch', origin);
+    dnsOnly.push(origin);
+  });
+
+  perfCount('net.preconnect.detected', origins.length);
+  perfCount('net.preconnect.used', connected.length);
+  perfCount('net.dnsPrefetch.used', dnsOnly.length);
+  if (state.log && state.log.push) {
+    state.log.push('net', 'hints preconnect=' + connected.length + ' dns=' + dnsOnly.length + ' detected=' + origins.length);
+  }
 }
 
 /* [15] main */
@@ -7912,9 +8332,9 @@ async function main() {
 
     createLightbox();
     bindVisibilityHandlers();
-    preconnect();
 
     await collectInitial();
+    preconnect();
     state.log.push('collect', 'done total=' + state.items.list.length);
     applyFilterSort();
     updateInfo();
@@ -7950,6 +8370,7 @@ async function main() {
     );
     if (shouldPreBoost) {
       state.crawl.allowUserBoost = true;
+      updateChipUI();
       state.log.push('crawl', 'pre-boost links=' + linkCandidates.length + ' bodyLinks=' + bodyLinks + ' img=' + imgCount + ' limit=' + (state.cfg.crawlBaseLimit + state.cfg.crawlBoost));
     }
     if (!mediaDoc && (needByCount || lightCrawl || imgCount < 12 || (pagerPlan && pagerPlan.urls && pagerPlan.urls.length))) {
@@ -8043,6 +8464,15 @@ C) .grid がスクロールで安定して動作する（flex潰れなし）
 58) 各カードに P1/P2... のラベルが出て取得元ページが分かる
 59) 巡回fetchのHTML文字列復旧拾いが無効化され、本文外混入が増えない
 60) 巡回停止でin-flight/タイマーが止まる（回帰なし）
+61) フィルターチップはiPhone幅でも1行を維持し、横スクロール中に誤選択しない
+62) 各フィルターに現在表示可能な件数が出て、active/aria-pressedが一致する
+63) ヘッダー・フィルター・Lightbox主要ボタンは44px以上のタップ領域を持つ
+64) Lightbox上部に現在位置 X / Y が表示され、Prev/Next/Swipeで更新される
+65) 画像Lightboxのみ左右スワイプでPrev/Next、縦操作・VIDEO/embedでは誤発火しない
+66) ⓘでP番号/種別/寸法/host/重複情報を開閉できる
+67) EscapeでClose、←/→でPrev/Next、Tab/Shift+TabがLightbox外へ逃げない
+68) Lightboxはrole=dialog/aria-modal=trueを持ち、Close後は現在カードへ戻ってfocusも復帰する
+69) Pinch zoom/double-tap zoom/下スワイプCloseは未実装のまま（別rev扱い）
 */
 
 })();
