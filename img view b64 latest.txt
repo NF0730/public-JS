@@ -368,12 +368,18 @@ javascript:(function(){
 /* rev2.1.4:
  * improve gallery ergonomics with a one-line filter rail and counts, 44px touch targets, Lightbox position/detail UI, image swipe navigation, keyboard/modal focus behavior, and ARIA state without changing media collection or crawl scope
  */
+/* rev2.1.5:
+ * keep crawl reads abort-safe, retain the DOM monitor after collection, process all relevant mutation roots, and scope/source-normalize observer rescans
+ */
 
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '2.1.4';
+const SCRIPT_REV = '2.1.5';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+const RUN_TOKEN = SCRIPT_NAME + ':' + SCRIPT_REV + ':' + Date.now() + ':' + Math.random();
 
 const state = {
+  runToken: RUN_TOKEN,
+  runtime: null,
   cfg: {},
   env: {},
   perf: {
@@ -698,11 +704,24 @@ function getRuntimeStats() {
   return stats;
 }
 
+function isRunCurrent() {
+  if (!state || !state.runToken || (state.abort && state.abort.aborted)) return false;
+  try {
+    const runtime = window[FMP_RUNTIME_KEY];
+    if (!runtime || runtime.runToken !== state.runToken) return false;
+    const root = document.getElementById(ROOT_ID);
+    return !!root && (!state.ui || !state.ui.root || state.ui.root === root);
+  } catch (e) {
+    return false;
+  }
+}
+
 function publishRuntime() {
   try {
-    const runtime = window[FMP_RUNTIME_KEY] || {};
+    const runtime = state.runtime || {};
     runtime.name = SCRIPT_NAME;
     runtime.rev = SCRIPT_REV;
+    runtime.runToken = state.runToken;
     runtime.isActive = function() {
       return !!document.getElementById(ROOT_ID);
     };
@@ -711,9 +730,11 @@ function publishRuntime() {
     };
     runtime.getStats = getRuntimeStats;
     runtime.dispose = function() {
+      try { abortAll('runtime-dispose'); } catch (e) {}
       try { cleanupUi(); } catch (e) {}
       try { finalize('ok', { reason: 'runtime-dispose' }); } catch (e) {}
     };
+    state.runtime = runtime;
     window[FMP_RUNTIME_KEY] = runtime;
     window[FMP_STATUS_KEY] = getRuntimeStats();
   } catch (e) {}
@@ -1031,6 +1052,12 @@ function cleanupUi() {
 
 function guardAndCleanup() {
   try {
+    const previousRuntime = window[FMP_RUNTIME_KEY];
+    if (previousRuntime && typeof previousRuntime.dispose === 'function') {
+      previousRuntime.dispose();
+    }
+  } catch (e) {}
+  try {
     const root = document.getElementById(ROOT_ID);
     const htmlLocked = document.documentElement && document.documentElement.style.overflow === 'hidden';
     const bodyLocked = document.body && document.body.style.overflow === 'hidden';
@@ -1041,12 +1068,12 @@ function guardAndCleanup() {
     }
   } catch (e) {}
   try {
-    if (window.__FMP_RUNNING__ && window.__FMP_ITEMS__) {
+    if (window.__FMP_ITEMS__) {
       cleanupExternalThumbItems(window.__FMP_ITEMS__, 'restart-external');
     }
   } catch (e) {}
   try {
-    if (window.__FMP_RUNNING__ && typeof window.__FMP_STOP_CRAWL__ === 'function') {
+    if (typeof window.__FMP_STOP_CRAWL__ === 'function') {
       window.__FMP_STOP_CRAWL__('restart');
     }
   } catch (e) {}
@@ -1076,8 +1103,13 @@ function finalize(status, detail) {
   try {
     if (window[FMP_RUNTIME_KEY]) publishRuntime();
   } catch (e) {}
-  disconnectMutationObserver();
-  stopWatchdog();
+  const reason = detail && detail.reason ? String(detail.reason) : '';
+  const terminalCleanup = status === 'error' || reason === 'closed' || reason === 'runtime-dispose';
+  if (terminalCleanup) {
+    try { abortAll(reason || status); } catch (e) {}
+    disconnectMutationObserver();
+    stopWatchdog();
+  }
   updateProgress('idle', status);
   safeCompletion(status, detail || {});
 }
@@ -2480,6 +2512,7 @@ async function collectInitial() {
 
   if (state.items.list.length < state.cfg.bgMinItems) {
     await unlockLazy();
+    if (!isRunCurrent()) return;
     updateProgress('scan', 'lazy');
     const beforeLazy = state.items.list.length;
     addItems(extractFromDocument(document, 'lazy', location.href));
@@ -3112,6 +3145,9 @@ async function crawlFetch(url) {
   if (state.abort.aborted || state.crawl.stop) return;
   if (state.cfg.crawlPreferSameOriginOnly && !isSameOriginUrl(url)) return;
   const controller = makeController();
+  const crawlStopped = function() {
+    return state.abort.aborted || state.crawl.stop || !!(controller.signal && controller.signal.aborted);
+  };
   const token = ++state.crawl.token;
   const timer = setTimeout(function() {
     try { controller.abort(); } catch (e) {}
@@ -3122,6 +3158,7 @@ async function crawlFetch(url) {
   updateProgress('net', token);
   try {
     const res = await fetch(url, { signal: controller.signal, credentials: 'same-origin' });
+    if (crawlStopped()) return;
     if (!res.ok) return;
     const contentType = (res.headers && typeof res.headers.get === 'function')
       ? (res.headers.get('content-type') || '')
@@ -3139,12 +3176,15 @@ async function crawlFetch(url) {
       return;
     }
     const html = await readResponseTextLimited(res, state.cfg.maxHtmlChars, maxBytes);
+    if (crawlStopped()) return;
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const items = extractFromDocument(doc, 'crawl', url);
+    if (crawlStopped()) return;
     if (!items.length) {
       state.log.push('crawl', '0 items (strict body-only) ' + url);
     }
     addItems(items);
+    if (crawlStopped()) return;
     if (state.crawl.mode === 'pager') {
       const plan = buildPagerPlan(url, doc);
       if (plan && plan.urls && plan.urls.length) {
@@ -8110,12 +8150,26 @@ function scheduleDomRescan(reason, root) {
   }, state.cfg.moDebounceMs || 0);
 }
 
+function normalizeDomRescanRoot(root) {
+  if (!root || root.nodeType !== 1) return root;
+  const tag = root.tagName ? root.tagName.toUpperCase() : '';
+  if (tag !== 'SOURCE') return root;
+  let parent = root.parentElement || null;
+  while (parent) {
+    const parentTag = parent.tagName ? parent.tagName.toUpperCase() : '';
+    if (parentTag === 'VIDEO' || parentTag === 'PICTURE') return parent;
+    parent = parent.parentElement || null;
+  }
+  return root;
+}
+
 function runDomRescanOnce(reason) {
   if (state.abort && state.abort.aborted) return;
   const moRescanStartedAt = perfStart('mo.rescan');
   perfCount('mo.rescan');
   const before = state.items.list.length;
-  const roots = (!state.mo.full && state.mo.roots && state.mo.roots.length) ? compactDomRescanRoots(state.mo.roots) : null;
+  const pendingRoots = (!state.mo.full && state.mo.roots && state.mo.roots.length) ? state.mo.roots.map(normalizeDomRescanRoot) : null;
+  const roots = pendingRoots && pendingRoots.length ? compactDomRescanRoots(pendingRoots) : null;
   perfCount('mo.roots', roots ? roots.length : 0);
   perfCount(roots && roots.length ? 'mo.partial' : 'mo.full');
   state.mo.roots = [];
@@ -8156,9 +8210,15 @@ function setupMutationObserver() {
   const isSelfMutationNode = function(node) {
     if (!node || node.nodeType !== 1) return false;
     try {
-      if (node.id === ROOT_ID) return true;
-      if (node.classList && (node.classList.contains('card') || node.classList.contains('thumb') || node.classList.contains('lightbox'))) return true;
-      if (node.closest && node.closest('#' + ROOT_ID + ',.card,.lightbox')) return true;
+      const ownedRoot = document.getElementById(ROOT_ID);
+      if (!ownedRoot) return false;
+      let current = node;
+      const seen = new Set();
+      while (current && !seen.has(current)) {
+        if (current === ownedRoot) return true;
+        seen.add(current);
+        current = current.parentNode || current.host || null;
+      }
     } catch (e) {}
     return false;
   };
@@ -8189,17 +8249,22 @@ function setupMutationObserver() {
           return;
         }
         let reason = '';
-        let root = null;
+        let relevantCount = 0;
+        let firstRoot = null;
         for (let i = 0; i < mutations.length; i += 1) {
           const m = mutations[i];
           if (m.type === 'childList') {
             const nodes = m.addedNodes || [];
             for (let j = 0; j < nodes.length; j += 1) {
               const r = findReasonFromNode(nodes[j]);
-              if (r) {
-                reason = r;
-                root = nodes[j] && nodes[j].nodeType === 1 ? nodes[j] : null;
-                break;
+              if (!r) continue;
+              relevantCount += 1;
+              if (!reason) reason = r;
+              if (nodes[j] && nodes[j].nodeType === 1) {
+                if (!firstRoot) firstRoot = nodes[j];
+                queueDomRescanRoot(nodes[j]);
+              } else {
+                state.mo.full = true;
               }
             }
           } else if (m.type === 'attributes') {
@@ -8214,17 +8279,23 @@ function setupMutationObserver() {
               if (isSelfMutationNode(t)) continue;
               const tr = reasonFromTag(t.tagName);
               if (tr && name) {
-                reason = 'attr-' + name;
-                root = t;
+                relevantCount += 1;
+                if (!reason) reason = 'attr-' + name;
+                if (!firstRoot) firstRoot = t;
+                queueDomRescanRoot(t);
               }
             }
           }
-          if (reason) break;
         }
-        if (reason) {
-          perfCount('mo.relevant');
-          if (root) perfCount('mo.relevantRoot');
-          scheduleDomRescan(reason, root);
+        if (relevantCount) {
+          perfCount('mo.relevant', relevantCount);
+          if (state.mo.full) {
+            perfCount('mo.fullFallback');
+            scheduleDomRescan(reason || 'burst', null);
+          } else {
+            perfCount('mo.relevantRoot', state.mo.roots ? state.mo.roots.length : 0);
+            scheduleDomRescan(reason, firstRoot || (state.mo.roots && state.mo.roots[0]) || null);
+          }
         }
         perfEnd('mo.callback', moCallbackStartedAt);
         return;
@@ -8317,6 +8388,7 @@ async function main() {
       }
     })(0);
     setTimeout(function() {
+      if (!isRunCurrent()) return;
       if (isUiVisible(state)) {
         perfMarkOnce('shell.visible');
         lockPage(state);
@@ -8334,6 +8406,7 @@ async function main() {
     bindVisibilityHandlers();
 
     await collectInitial();
+    if (!isRunCurrent()) return;
     preconnect();
     state.log.push('collect', 'done total=' + state.items.list.length);
     applyFilterSort();
@@ -8377,13 +8450,18 @@ async function main() {
       const delay = needByCount ? 0 : 120;
       state.log.push('crawl', 'trigger need=' + needByCount + ' links=' + linkCandidates.length + ' bodyLinks=' + bodyLinks + ' img=' + imgCount + ' pager=' + (pagerPlan && pagerPlan.urls ? pagerPlan.urls.length : 0));
       if (state.crawl.timer) clearTimeout(state.crawl.timer);
-      state.crawl.timer = setTimeout(function() { state.crawl.timer = 0; startCrawl(); }, delay);
+      state.crawl.timer = setTimeout(function() {
+        state.crawl.timer = 0;
+        if (!isRunCurrent()) return;
+        startCrawl();
+      }, delay);
     } else {
       state.crawl.done = true;
       updateProgress('idle', 'ready');
       maybeFinalize();
     }
   } catch (e) {
+    if (!isRunCurrent()) return;
     const msg = e && e.message ? e.message : String(e);
     if (state.ui && state.ui.info) {
       if (state.ui.infoTimer) {
