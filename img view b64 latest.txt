@@ -7,373 +7,13 @@ javascript:(function(){
  - abort/cleanup/finalize centralized; finalize is idempotent; UI cleanup separate
  - crawl is bounded, same-site, abortable; HTML/script/bg scans only when needed
 */
-/* rev1.26:
- - preserve thumb state on dedupe merges when URL unchanged; avoid needless reloads
- - track __renderUrl per card and reload only when URL changes or thumb incomplete
-*/
-/* rev1.29:
- - iOS repaint nudge: temp transform/will-change/backface with rAF restore + one-shot extra nudge after reveal
- - treat decode-with-timeout dim0 as retry (thumb/lb) with dim0 retry log
- - iPhone thumb concurrency throttles by item count; reevaluated in thumbPump (optional throttle log)
-*/
-/* rev1.30:
- - add ultra-light MutationObserver to trigger DOM-only rescan with debounce/cooldown
- - rescan uses DOM extract only; no html/script/bg scans; adds single mo rescan log line
-*/
-/* rev1.32:
- - remove visibility hide/show repaint path to avoid visible blink during loading
- - keep iOS repaint nudge and add light throttles for progress/info text updates
-*/
-/* rev1.33:
- - add TikTok (TT) embed collection/filter support (link + iframe)
- - reduce thumb retry black flash by removing BLANK_GIF swap during retry
-*/
-/* rev1.34:
- - TikTok (TT) embed: Lightbox auto-load (no LOAD button), keep other embeds unchanged
-*/
-/* rev1.35:
- - reduce perceived LOADING flicker with delayed overlay show + fade-out hide
-*/
-/* rev1.36:
- - reduce scroll jank while thumbs are loading by pausing pump during scroll and debouncing fallback scans
-*/
-/* rev1.37:
- - defer heavy thumb UI updates during scroll and suppress fallback full scan when IO is available
-*/
-/* rev1.38:
- - skip fallback full scans when IO is active and debounce render-time filter/sort applies to reduce jank
-*/
-/* rev1.39:
- - reduce scroll jank by removing per-thumb rect reads and lightening iOS repaint nudge paths
-*/
-/* rev1.40:
- - reduce scroll-time jank by batching repaint nudges and avoiding persistent GPU layers on thumb images
-*/
-/* rev1.41:
- - make Lightbox embed loading fully automatic (no LOAD button) and harden YT/INSTA sandbox settings
- - add best-effort card thumbnails for YT embeds and videos with poster
-*/
-/* rev1.42:
- - add lightweight playable marker + type outline for video/embed cards (no extra DOM nodes)
- - harden YouTube URL detection/normalization for watch/shorts/live/embed/m.youtube/youtube-nocookie
-*/
-/* rev1.43:
- - big list mode: skip img.decode for thumbs to reduce iOS scroll jank
- - adaptive IO rootMargin for large item counts
- - defer info UI updates while scrolling; flush once on scroll resume
-*/
-/* rev1.44:
- - keep type colored frame visible even after thumbnail image loads (move frame from .thumb outline to .card::after overlay)
-*/
-/* rev1.45:
- - lock colored card frame on top in iOS compositing paths and add matching type-colored frame in Lightbox
-*/
-/* rev1.46:
- - add always-visible compact type icon badges on card thumbnails (X/TT/YT/IG/IM/? and video ▶)
- - keep existing behavior while preserving full type info via badge title/aria-label
-*/
-/* rev1.47:
- - collect direct video links from a[href] (.mp4/.webm/.mov/.m4v/.ogv) when not matched as embeds
-*/
-/* rev1.48:
- - stop crawl boost on filter/sort taps; add explicit "巡回+" chip to trigger boost on demand
-*/
-/* rev1.49:
- - harden Lightbox direct-video playback on iOS and show VIDEO FAIL hints with host/error details
-*/
-/* rev1.50:
- - prefer direct video playback by removing default Lightbox crossorigin on videos
-*/
-/* rev1.51:
- - show VIDEO FAIL details on badge (multiline), add tap-to-copy info, and log full details
-*/
-/* rev1.52:
- - keep VIDEO FAIL badge from being overwritten by NO THUMB and expand failure info
- - defer Lightbox direct video src/load until after append for iOS stability
+/* rev3.0.4: maintenance-only cleanup; full revision history through
+ * rev3.0.3 remains in the archived source. Preserve all active features,
+ * dormant acquisition paths, Safari fallbacks and acceptance tests.
+ * Reuse responsive class decisions within each synchronous CSS-rule pass.
  */
-/* rev1.53:
- - add srcdoc fallback for video.twimg.com direct video failures with no-referrer context
- */
-/* rev1.54:
- - show VIDEO FAIL badge only when final playback failure is confirmed
- */
-/* rev1.55:
- - prioritize in-view cards during scroll (viewport-first enqueue + visible-only pump)
- - keep prefetch but lower scroll-time concurrency and skip thumb decode while scrolling
- */
-/* rev1.56:
- - thumbs load while scrolling using IO in-view flag (no rect reads in scroll-time pump path)
- */
-/* rev1.57:
- - thumbs load while scrolling using IO in-view flag + high-Hz detection tuned scroll-time concurrency
- */
-/* rev1.58:
- - isolate in-view update behavior by fixing thumb IO rootMargin to 0px
- */
-/* rev1.59:
- - remove thumb IO callback rect reads via entry.rootBounds fallback
- - batch thumbPump via rAF scheduling from enqueue path and optimize queue hot path
- */
-/* rev1.60:
- - default-hide originally hidden media in panel, add hidden toggle chip, and add hidden label on cards
- */
-/* rev1.61:
- - hard cleanup: detach visibility/scroll/resize handlers and disconnect thumb IO on close
- - unobserve cards before removing failed thumb cards
- */
-/* rev1.62:
- - make thumb/lightbox img src checks robust against browser absolute-url normalization
- */
-/* rev1.63:
- - skip non-HTML crawl responses early by Content-Type check before text/DOM parse
- */
-/* rev1.64:
- - switch render queue and thumb UI queue to head-index pops (avoid shift() hot-path cost)
- */
-/* rev1.65:
- - reduce thumb flicker by avoiding unconditional extra iOS repaint nudge
- - keep visible thumb during same-src reload/retry when possible
- */
-/* rev1.66:
- - collect direct image links from a[href] and normalize resize/blogimg variants for dedup
- */
-/* rev1.67:
- - prefer higher-quality image variants when dedup keys collide
- */
-/* rev1.68:
- - normalize livedoor.sp.blogimg.jp host variants in dedup URL keys
- - refresh card meta dimensions after thumb metrics resolve
- */
-/* rev1.69:
- - avoid needless thumb reload when dedup switches between equivalent image URL variants
- */
-/* rev1.70:
- - defer thumb URL switch while loading and apply at most one post-load refresh
- */
-/* rev1.71:
- - dedup image-tag URL candidates by canonical key and prioritize best-first order
- */
-/* rev1.72:
- - reduce thumb flicker by disabling retry and softening watchdog thumb kick aggressiveness
- */
-/* rev1.73:
- - add thumbnail-likeness scoring and route high-score candidates to existing noise-hide flow
- */
-/* rev1.74:
- - treat <=100x100 images as thumbnail-hide candidates in thumbnail scoring
- */
-/* rev1.75:
- - detect small thumbnail size hints from crop/resize URL patterns and enforce <=100x100 hide after load
- */
-/* rev1.76:
- - add hidden-reason breakdown (info/log), duplicate-cluster detail badge, and score debug labels
- */
-/* rev1.77:
- - detect embed URLs in anchor text when href points to a different asset URL
- */
-/* rev1.78:
- - treat pbs.twimg.com/media ?format=jpg/png/... links as direct images
- - skip text-embed fallback when href is direct image/video to keep media lightbox behavior
- */
-/* rev1.79:
- - keep direct-image LB path while adding INSTA hint styling (badge/frame) from anchor text links
- */
-/* rev1.82:
- - split embed badge/frame gradients by site image colors (YT/X/TT/INSTA/IMGUR; VIDEO/OTHER unchanged)
- */
-/* rev1.83:
- - re-apply lockPage on delayed-visible UI at 800ms check so non-LB buttons remain tappable
- */
-/* rev1.84:
- - boost thumbnail-like score for small square same-origin related-article links
- - add +1 hint for 320x320-style URL size markers under related-square context
- */
-/* rev1.85:
- - normalize crawl candidates so same-host http links are upgraded to https on https pages
- - keep same-origin crawl active for mixed-scheme next/prev links on custom-domain livedoor pages
- */
-/* rev1.86:
- - prioritize entry next/prev links in crawl queue to avoid early limit exhaustion on noisy pages
- - dedupe crawl candidates by normalized URL while preserving priority order
- */
-/* rev1.87:
- - pre-boost crawl limit on dense-link pages when image count is still low
- - add crawl pre-boost log to verify boosted start conditions
- */
-/* rev1.88:
- - enable pager plan for custom-domain livedoor archive articles
- - infer max pager count from page-current text like 1/7 when only p=2 link is exposed
- */
-/* rev1.89:
- - normalize imgur single-image URLs that include file extensions before building embed URLs
- - keep IMGUR openUrl canonicalized to extension-free image page URLs
- */
-/* rev1.90:
- - treat direct image/video URLs found in link text as media candidates when href is a lite/article wrapper
- - preserve existing embed detection while adding text-media fallback for missed source links
- */
-/* rev1.91:
- - harden non-LB UI input by forcing bg passthrough/panel foreground and resilient button defaults
- */
-/* rev1.92:
- - route non-LB UI taps via click/pointerup/touchend with ghost-click guard for hostile click hooks
- */
-/* rev1.93:
- - harden thumbnail tap path for LB open with touch/pointer fallback + ghost-click suppression
- */
-/* rev1.94:
- - keep Lightbox above panel by fixing lb z-index for panel-front layout introduced in rev1.91
- */
-/* rev1.95:
- - add tap-vs-drag threshold on thumbnail gestures to prevent LB opens while scrolling the grid
- */
-/* rev1.96:
- - suppress synthetic click after touch/pointer end and treat scroll delta as moved to avoid accidental LB opens
- */
-/* rev1.97:
- - restore thumbnail LB open trigger to rev1.92 click-only behavior while keeping rev1.94 LB z-index fix
- */
-/* rev1.98:
- - add touchend capture fallback for thumb tap when click is blocked, with strict move/scroll guard to keep scroll-safe behavior
- */
-/* rev1.99:
- - route LB control/backdrop taps via click/pointerup/touchend to avoid dead controls after first LB open
- */
-/* rev1.100:
- - dedupe LB non-click tap events (touchend/pointerup) so Prev/Next advances exactly one item per tap
- */
-/* rev1.101:
- - dedupe minkch image variants like ...12345s.jpg and ...12345.jpg into one canonical image key
- */
-/* rev1.101.1:
- - fix non-LB chip taps by deduping touchend/pointerup so hidden toggle does not flip back
- - remove SORT chips/state hooks from panel UI
- */
-/* rev1.101.3:
- - switch crawl queue pop path to head-index compaction to avoid shift() hot-path cost
- */
-/* rev1.101.4:
- - route thumbnail-like images to default-hidden bucket instead of noise bucket
- - default-hide same-site different-page link thumbnails under the existing hidden toggle
- */
-/* rev1.101.5:
- - start IO thumb enqueue at threshold 0 with a small IO rootMargin based on fallback prefetch logic
- - raise iPhone scroll-time thumb concurrency from 1 to 2
- */
-/* rev1.101.8:
- - guard Lightbox async callbacks with a shared token and abort stale image loads on switch/close
- */
-/* rev1.101.9:
- - coalesce updateInfo visibility scans so thumbnail bursts do not run full-list stats per image
- */
-/* rev1.101.10:
- - cache original-hidden ancestor checks per extraction and skip computed style for parsed crawl documents
- */
-/* rev1.101.11:
- - make MutationObserver rescans target changed subtrees, with full-DOM fallback for bursts
- */
-/* rev1.101.12:
- - release debug globals on UI cleanup so state/items/source DOM references do not linger
- */
-/* rev1.101.13:
- - limit crawl HTML reads with streaming cutoff and Content-Length fallback guard
- */
-/* rev1.101.14:
- - make sameSite conservative: same-origin or explicit exact host allowlist only
- */
-/* rev1.101.15:
- * add lightweight runtime/status marker and DOM active attr for shortcut chain; cleanup removes globals/attr
-  */
-/* rev1.101.16:
- * smooth grid scroll thumbnail reveal by widening IO prefetch margin, shortening scroll pause, and allowing 3 in-flight thumbs on iPhone while scrolling
-  */
-/* rev1.101.17:
- * make scroll-time thumb concurrency effective on large iPhone lists by using scrollMax while scrolling; keep big-list throttle for non-scroll
-  */
-/* rev1.101.18:
- * rescue in-view thumb reveal during scroll when IO in-view flag is stale; only one card rect check inside revealThumb
-  */
-/* rev1.101.19:
- * lighten iOS repaint helper by batching repaint images per frame and skipping global layout flush while scrolling
-  */
-/* rev1.101.20:
- * delay LOADING overlay DOM creation until the overlay delay expires, so fast thumbnails do not create overlay nodes
-  */
-/* rev1.101.21:
- * delay updateCard reload LOADING overlay too; remove immediate overlay creation before thumbEnqueue
-  */
-/* rev1.101.22:
- * harden cleanup by aborting active thumb contexts, clearing overlay timers/queues, and resetting Lightbox load context
-  */
-/* rev1.101.23:
- * cleanup previous instance thumb contexts from window.__FMP_ITEMS__ before replacing runtime globals
-  */
-/* rev1.101.24:
- * cleanup old root DOM timers/handlers before removing previous root on restart
-  */
-/* rev1.101.25:
- * preload previous/next Lightbox image only via detached Image objects; no DOM/UI/CSS change
-  */
-/* rev1.101.26:
- * cache body/avoid selector joins, compact MO partial roots by parent/child relation, and avoid duplicate fallback thumb scans per render flush
-  */
-/* rev1.101.27:
- * reuse scope/avoid closest checks during extraction and harden preconnect when no head/root is available
- */
-/* rev1.101.28:
- * reduce extraction/MO overhead by looping NodeLists directly, caching scope checks per extraction, and ignoring self UI mutations
- */
-/* rev1.101.29:
- * cache visibility stats, cap video poster canvas size, skip unchanged MO attributes, and limit scroll-time thumb requeue churn
- */
-/* rev2.0.0:
- * add opt-in lightweight performance counters/timestamps for staged baseline measurement without changing runtime behavior
- */
-/* rev2.0.1:
- * coalesce relevant MutationObserver roots behind an opt-in flag while preserving the legacy callback path when disabled
- */
-/* rev2.0.2:
- * make the IO-enabled scroll pump priority-only behind an opt-in flag while preserving no-IO and non-scroll behavior
- */
-/* rev2.0.3:
- * collect an opt-in crawl bootstrap snapshot for comparison without changing crawl seed or request behavior
- */
-/* rev2.0.4:
- * reuse the opt-in crawl bootstrap snapshot in startCrawl while preserving the fallback rescan path
- */
-/* rev2.0.5:
- * measure source element retention and connected/detached state without releasing source elements
- */
-/* rev2.0.6:
- * release source elements only after the dependent scoring, thumbnail, or card lifecycle is complete
- */
-/* rev2.0.7:
- * scope dark theme tokens to the FMP shell and preserve the existing palette while declaring dark color-scheme
- */
-/* rev2.0.8:
- * move safe static theme presentation into scoped D2 classes while preserving runtime inline state paths
- */
-/* rev2.1.0:
- * add an independent dark color-scheme declaration for the self-owned fallback video document while preserving embed boundaries
- */
-/* rev2.1.1:
- * isolate the Light DOM fallback stylesheet to the FMP shell without changing declarations or Shadow DOM behavior
- */
-/* rev2.1.2:
- * add a measured Light DOM root-ID selector branch for F4/F5 inbound cascade hardening while preserving D5A, Shadow DOM, and declarations
- */
-/* rev2.1.3:
- * enforce streamed crawl byte caps, release completed source DOM references, prioritize current Lightbox images over neighbor preloads, and make connection hints demand-driven by detected media origins
- */
-/* rev2.1.4:
- * improve gallery ergonomics with a one-line filter rail and counts, 44px touch targets, Lightbox position/detail UI, image swipe navigation, keyboard/modal focus behavior, and ARIA state without changing media collection or crawl scope
- */
-/* rev2.1.5:
- * keep crawl reads abort-safe, retain the DOM monitor after collection, process all relevant mutation roots, and scope/source-normalize observer rescans
- */
-
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '2.1.5';
+const SCRIPT_REV = '3.0.4';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 const RUN_TOKEN = SCRIPT_NAME + ':' + SCRIPT_REV + ':' + Date.now() + ':' + Math.random();
 
@@ -395,24 +35,38 @@ const state = {
     list: [],
     byId: new Map(),
     nextId: 1,
+    orderDirty: false,
+    liveImageVisibility: new Map(),
+    liveVisibilityDirty: false,
+    visualGroups: [],
+    visualCount: 0,
+    visualCanvas: null,
     errorCount: 0,
     noiseCount: 0,
     lastRenderLog: 0,
     renderQueue: [],
     renderQueueHead: 0,
     renderScheduled: false,
+    renderRaf: 0,
     filterSortTimer: 0
   },
   seen: { map: new Map(), order: [] },
   groupBest: new Map(),
   ui: {
+    disposed: false,
     root: null,
     shadow: null,
     wrap: null,
     header: null,
     filterBar: null,
+    filterButtons: null,
+    hiddenChip: null,
+    noiseChip: null,
+    boostChip: null,
     logBtn: null,
     grid: null,
+    density: 'normal',
+    densityChip: null,
     info: null,
     progress: null,
     locked: false,
@@ -427,6 +81,7 @@ const state = {
     progressPendingText: '',
     progressTimer: 0,
     infoTimer: 0,
+    logFlashTimer: 0,
     infoLastAt: 0,
     infoLastText: '',
     infoThrottleTimer: 0,
@@ -456,6 +111,8 @@ const state = {
     counter: null,
     infoPanel: null,
     infoOpen: false,
+    zoom: null,
+    zoomBtn: null,
     invoker: null,
     onKeyDown: null,
     badge: null,
@@ -477,6 +134,8 @@ const state = {
     scrollResumeTimer: 0,
     scrollEndScanTimer: 0,
     pumpScheduled: false,
+    pumpRaf: 0,
+    uiFlushRaf: 0,
     lastIoRootRect: null,
     uiQueueHead: 0,
     onScroll: null,
@@ -509,6 +168,10 @@ const state = {
     queue: [],
     queueHead: 0,
     queueDedup: new Set(),
+    queuePriority: new Set(),
+    pageOrder: new Map(),
+    responsiveCss: new Map(),
+    responsiveCssBytes: 0,
     visited: new Set(),
     inFlight: 0,
     limit: 0,
@@ -594,7 +257,9 @@ function perfMeasureSourceEl(item) {
 }
 
 function releaseSourceEl(item, reason) {
-  if (!state.cfg.releaseSourceEl || !item || !item.__sourceEl) return;
+  if (!state.cfg.releaseSourceEl || !item) return;
+  item.__thumbSourceFacts = null;
+  if (!item.__sourceEl) return;
   item.__sourceEl = null;
   item.__sourceElMetricStatus = '';
   perfCount('sourceElReleased');
@@ -839,6 +504,7 @@ function cleanupLightboxLoad(reason) {
     if (state.lb) {
       state.lb.open = false;
       state.lb.index = -1;
+      state.lb.list = [];
       state.lb.currentId = null;
       state.lb.__ctx = null;
       state.lb.__loading = false;
@@ -958,10 +624,26 @@ function cleanupExternalRootDom(root, reason) {
 }
 
 function cleanupUi() {
+  if (state.ui.disposed) return;
+  state.ui.disposed = true;
+  state.items.visualGroups.length=0;
+  state.items.visualCount=0;
+  state.items.visualCanvas=null;
+  state.items.liveImageVisibility.clear();
+  state.crawl.responsiveCss.clear();
+  for (const it of state.items.list) {it.__visualGroup=null;it.__visualOrder=null;}
+  if (state.items.renderRaf) cancelAnimationFrame(state.items.renderRaf);
+  state.items.renderRaf = 0;
+  if (state.thumb.pumpRaf) cancelAnimationFrame(state.thumb.pumpRaf);
+  state.thumb.pumpRaf = 0;
+  if (state.thumb.uiFlushRaf) cancelAnimationFrame(state.thumb.uiFlushRaf);
+  state.thumb.uiFlushRaf = 0;
+  state.thumb.uiFlushScheduled = false;
   const cleanupStartedAt = perfStart('cleanup');
   perfCount('cleanup.begin');
   disconnectMutationObserver();
   stopWatchdog();
+  resetLightboxZoom();
   cleanupLightboxLoad('cleanup-ui');
   cleanupActiveThumbLoads('cleanup-ui');
   disconnectThumbObserver();
@@ -1021,9 +703,11 @@ function cleanupUi() {
     state.ui.infoThrottleTimer = 0;
   }
   if (state.ui.progressTimer) {
-    clearInterval(state.ui.progressTimer);
+    clearTimeout(state.ui.progressTimer);
     state.ui.progressTimer = 0;
   }
+  if (state.ui.infoTimer) { clearTimeout(state.ui.infoTimer); state.ui.infoTimer = 0; }
+  if (state.ui.logFlashTimer) { clearTimeout(state.ui.logFlashTimer); state.ui.logFlashTimer = 0; }
   if (state.ui.boundVis) {
     if (state.ui.onVisibilityChange) {
       try { document.removeEventListener('visibilitychange', state.ui.onVisibilityChange); } catch (e) {}
@@ -1111,7 +795,7 @@ function finalize(status, detail) {
     stopWatchdog();
   }
   updateProgress('idle', status);
-  safeCompletion(status, detail || {});
+  publishPayloadCompletion(status, detail || {});
 }
 
 /* [01] env/device判定 */
@@ -1234,7 +918,7 @@ function initCfg() {
     moMaxMutations: 80,
     moBatchRoots: false,
     moObserveAttributes: true,
-    moAttrFilter: ['src','srcset','data-src','data-srcset','href','style','class'],
+    moAttrFilter: ['src','srcset','data-src','data-srcset','href','style','class','poster','data-poster','data-thumbnail','data-thumb','data-preview-image','data-lazy-src','hidden'],
     wdEnabled: true,
     wdTickMs: 1200,
     wdStallMsThumb: 9000,
@@ -1401,12 +1085,21 @@ const VID_EXT = /\.(mp4|webm|mov|m4v|ogv)(\?|#|$)/i;
 
 function hasExcludedWord(u) {
   if (!u) return false;
-  const s = String(u).toLowerCase();
-  const words = ['favicon', 'apple-touch-icon', 'sprite', 'icon', 'logo', 'avatar', 'emoji', 'badge', 'spinner', 'loading', 'pixel', 'spacer'];
-  for (let i = 0; i < words.length; i += 1) {
-    if (s.indexOf(words[i]) !== -1) return true;
-  }
-  return false;
+  let path = String(u);
+  try { path = new URL(path, location.href).pathname; } catch (e) {}
+  try { path = decodeURIComponent(path); } catch (e) {}
+  const tokens = path.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/);
+  const excluded = /^(?:favicon|sprite|icon|logo|avatar|emoji|badge|spinner|loading|pixel|spacer)s?\d*$/;
+  return tokens.some(function(token) { return excluded.test(token); }) ||
+    /(?:^|[\/_-])apple-touch-icon(?:[\/_\-.]|$)/i.test(path);
+}
+
+function isImageResourceLink(u) {
+  if (!u) return false;
+  try {
+    const p = new URL(String(u), location.href);
+    return /\.(?:png|jpe?g|gif|webp|avif|bmp|svg|ico)$/i.test(p.pathname) || isPbsMediaImageUrl(u);
+  } catch (e) { return false; }
 }
 
 function isImageUrl(u) {
@@ -1414,7 +1107,7 @@ function isImageUrl(u) {
   const s = String(u).trim();
   if (!s) return false;
   if (/^data:/i.test(s)) return false;
-  if (hasExcludedWord(s)) return false;
+  if (hasExcludedWord(s) && !getImgurDirectMedia(s)) return false;
   if (/\.svg(\?|#|$)/i.test(s)) return false;
   return IMG_EXT.test(s);
 }
@@ -1438,13 +1131,13 @@ function isImgTagCandidateUrl(u) {
   const s = String(u).trim();
   if (!s) return false;
   if (/^data:/i.test(s)) return false;
-  if (hasExcludedWord(s)) return false;
+  if (hasExcludedWord(s) && !getImgurDirectMedia(s)) return false;
   if (/\.svg(\?|#|$)/i.test(s)) return false;
   return /^https?:/i.test(s) || /^blob:/i.test(s);
 }
 
 function isVideoUrl(u) {
-  return /^data:video\//i.test(u) || VID_EXT.test(u);
+  return /^data:video\//i.test(u) || VID_EXT.test(u) || (/\.gifv(?:[?#]|$)/i.test(u) && !!getImgurDirectMedia(u));
 }
 
 function stripSizeSuffix(path) {
@@ -1454,6 +1147,26 @@ function stripSizeSuffix(path) {
   p = p.replace(/@2x(?=\.[a-z0-9]+$)/i, '');
   p = p.replace(/\._[A-Z0-9,-]+_(?=\.[a-z0-9]+$)/i, '');
   return p;
+}
+
+function resolveMediaReference(raw, base) {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  if (/^(blob:|data:)/i.test(value)) return value;
+  try {
+    const u = new URL(value, base || location.href);
+    if (!/^https?:$/.test(u.protocol)) return '';
+    u.hash = '';
+    return u.href;
+  } catch (e) { return ''; }
+}
+
+function getMediaDocumentBase(doc, fallback) {
+  const base = fallback || location.href;
+  const owner = doc && (doc.nodeType === 9 ? doc : doc.ownerDocument);
+  if (!owner) return base;
+  const tag = owner.querySelector('base[href]');
+  return tag ? (resolveMediaReference(tag.getAttribute('href'), base) || base) : base;
 }
 
 function normalizeUrl(raw, base) {
@@ -1504,6 +1217,7 @@ function normalizeUrl(raw, base) {
   }
   if (!/^https?:$/.test(u.protocol)) return null;
   u.hash = '';
+  const sourceAbs = u.href;
   let host = u.hostname.toLowerCase();
   if (host === 'livedoor.sp.blogimg.jp') {
     host = 'livedoor.blogimg.jp';
@@ -1543,7 +1257,7 @@ function normalizeUrl(raw, base) {
   const canon = u.toString();
   const hasExt = /\.(png|jpe?g|gif|webp|avif|bmp|mp4|webm|mov|m4v)$/i.test(path);
   const groupKey = host + path + (hasExt ? '' : (groupParams.toString() ? '?' + groupParams.toString() : ''));
-  return { abs: u.toString(), canon: canon, groupKey: groupKey, host: host };
+  return { abs: u.toString(), canon: canon, groupKey: groupKey, host: host, sourceAbs: sourceAbs };
 }
 
 function isLivedoorArticle(url) {
@@ -1569,7 +1283,7 @@ function computePageLabel(url) {
   return 'P1';
 }
 
-function canonicalMediaKey(absUrl, kind) {
+function legacyCanonicalMediaKey(absUrl, kind) {
   if (!absUrl) return '';
   if (absUrl.startsWith('data:') || absUrl.startsWith('blob:')) return absUrl;
   let u;
@@ -1588,8 +1302,8 @@ function canonicalMediaKey(absUrl, kind) {
     return u.origin + u.pathname;
   }
   if (host === 'i.imgur.com') {
-    const p = u.pathname.replace(/([a-z0-9])([sbtmlh])(\.[a-z0-9]+)$/i, '$1$3');
-    u.pathname = p;
+    // Five/seven-character full IDs must never lose their final letter.
+    u.pathname = u.pathname.replace(/^(\/(?:[A-Za-z0-9]{5}|[A-Za-z0-9]{7}))[sbtmlh](\.(?:jpe?g|png|gif|webp|avif|bmp))$/i, '$1$2');
   }
   if (host === 'imgs.minkch.com') {
     u.pathname = (u.pathname || '').replace(/^(\/imgs\/(?:d)?\d{8,14}\/\d+)([smt])(\.[a-z0-9]+)$/i, '$1$3');
@@ -1611,11 +1325,72 @@ function canonicalMediaKey(absUrl, kind) {
     const key = k.toLowerCase();
     if (key.startsWith('utm_')) return;
     if (dropExact.indexOf(key) !== -1) return;
-    if (dropSize.indexOf(key) !== -1) return;
+    if (dropSize.indexOf(key) !== -1 && !(key === 'name' && !/\.[a-z0-9]+$/i.test(u.pathname))) return;
     next.set(k, v);
   });
   u.search = next.toString() ? '?' + next.toString() : '';
   return u.origin + u.pathname + u.search;
+}
+
+function isKnownImageVariantHost(host) {
+  return /(?:^|\.)blogimg\.jp$/i.test(host) || host === 'resize.blogsys.jp' ||
+    host === 'pbs.twimg.com' || host === 'i.imgur.com' || host === 'imgs.minkch.com';
+}
+
+function canonicalMediaKey(absUrl, kind) {
+  if (kind !== 'img' && kind !== 'video') return legacyCanonicalMediaKey(absUrl, kind);
+  if (!absUrl || /^(?:data:|blob:)/i.test(absUrl)) return absUrl || '';
+  try {
+    const u = new URL(absUrl, location.href);
+    u.hash = '';
+    if (kind === 'img' && isKnownImageVariantHost(u.hostname.toLowerCase())) {
+      const norm = normalizeUrl(u.href, location.href);
+      return legacyCanonicalMediaKey(norm ? norm.abs : u.href, kind);
+    }
+    // URL suffixes, arbitrary query keys and parameter order can encode
+    // different content. Without known host or same-slot evidence, keep them.
+    return u.href;
+  } catch (e) { return absUrl; }
+}
+
+function sameDeclaredRendition(a,b) {
+  if (!a || !b || a===b) return false;
+  try {
+    const u=new URL(a,location.href),v=new URL(b,location.href);
+    if (u.origin!==v.origin || !/^https?:$/.test(u.protocol)) return false;
+    const shape = p=>p.replace(/-\d{2,4}x\d{2,4}(?=\.[a-z0-9]+$)/i,'').replace(/@2x(?=\.[a-z0-9]+$)/i,'');
+    if (shape(u.pathname)!==shape(v.pathname)) return false;
+    const sizeOnly = x => {
+      const p=new URLSearchParams(x.search);
+      for (const k of ['w','h','width','height','dpr']) {
+        const values=p.getAll(k);
+        if (values.length===1 && /^\d+(?:\.\d+)?$/.test(values[0]) && Number(values[0])>0) p.delete(k);
+      }
+      return p.toString();
+    };
+    return sizeOnly(u)===sizeOnly(v) && (u.pathname!==v.pathname || u.search!==v.search);
+  } catch(e) { return false; }
+}
+
+function getDeclaredOriginalIdentity(img, url, base) {
+  if (!img || !img.closest) return url;
+  const link = img.closest('a[href]');
+  if (!link || link.querySelector('img') !== img || link.querySelectorAll('img').length !== 1) return url;
+  const original = resolveMediaReference(link.getAttribute('href'), base);
+  if (!original || original === url || !isDirectImageUrl(original)) return url;
+  if (sameDeclaredRendition(url,original)) return original;
+  const a = normalizeUrl(url, base), b = normalizeUrl(original, base);
+  // Only link-related candidates that matched the existing variant rule.
+  // Never infer equivalence between independent images or arbitrary links.
+  if (a && b && legacyCanonicalMediaKey(a.abs,'img') === legacyCanonicalMediaKey(b.abs,'img')) {
+    try {
+      const ua = new URL(url, base), ub = new URL(original, base);
+      if (isKnownImageVariantHost(ua.hostname.toLowerCase()) && isKnownImageVariantHost(ub.hostname.toLowerCase()) &&
+          canonicalMediaKey(ua.href,'img') === canonicalMediaKey(ub.href,'img')) return original;
+      if (ua.origin === ub.origin && ua.search === ub.search && stripSizeSuffix(ua.pathname) === stripSizeSuffix(ub.pathname)) return original;
+    } catch (e) {}
+  }
+  return url;
 }
 
 function pickBestFromSrcset(srcset) {
@@ -1724,9 +1499,10 @@ function matchesFilterKey(item, key) {
   if (k === 'VIDEO') return item.kind === 'video';
   if (k === 'X') return item.kind === 'embed' && item.embedType === 'X';
   if (k === 'INSTA') return item.embedType === 'INSTA';
-  if (k === 'IMGUR') return item.kind === 'embed' && item.embedType === 'IMGUR';
+  if (k === 'IMGUR') return isImgurFilterItem(item);
   if (k === 'YT') return item.kind === 'embed' && item.embedType === 'YT';
   if (k === 'TT') return item.kind === 'embed' && item.embedType === 'TT';
+  if (k === 'EXTVIDEO') return isAdditionalVideoItem(item);
   return true;
 }
 
@@ -1734,8 +1510,8 @@ function passesFilter(item) {
   return matchesFilterKey(item, state.filter.key || 'ALL');
 }
 
-function collectFilterCounts() {
-  const counts = {
+function createFilterCounts() {
+  return {
     ALL: 0,
     BODY: 0,
     IMG: 0,
@@ -1744,80 +1520,98 @@ function collectFilterCounts() {
     INSTA: 0,
     IMGUR: 0,
     YT: 0,
-    TT: 0
+    TT: 0,
+    EXTVIDEO: 0
   };
-  state.items.list.forEach(function(item) {
-    if (!item) return;
-    if (item.__hashDup || item.__failed) return;
-    if (state.cfg.noiseHide && item.__isNoise) return;
-    if (state.cfg.hiddenHide && (item.__allHidden || item.__autoHidden)) return;
-    counts.ALL += 1;
-    if (item.scope === 'body') counts.BODY += 1;
-    if (item.kind === 'img') counts.IMG += 1;
-    if (item.kind === 'video') counts.VIDEO += 1;
-    if (item.embedType === 'INSTA') counts.INSTA += 1;
-    if (item.kind === 'embed') {
-      if (item.embedType === 'X') counts.X += 1;
-      if (item.embedType === 'IMGUR') counts.IMGUR += 1;
-      if (item.embedType === 'YT') counts.YT += 1;
-      if (item.embedType === 'TT') counts.TT += 1;
-    }
-  });
+}
+
+function countFilterItem(counts, item) {
+  if (!item || item.__hashDup || item.__failed || isSourceSuppressed(item)) return;
+  if (state.cfg.noiseHide && item.__isNoise) return;
+  if (state.cfg.hiddenHide && (item.__allHidden || item.__autoHidden)) return;
+  counts.ALL += 1;
+  if (item.scope === 'body') counts.BODY += 1;
+  if (item.kind === 'img') counts.IMG += 1;
+  if (item.kind === 'video') counts.VIDEO += 1;
+  if (item.embedType === 'INSTA') counts.INSTA += 1;
+  if (isImgurFilterItem(item)) counts.IMGUR += 1;
+  if (item.kind === 'embed') {
+    if (item.embedType === 'X') counts.X += 1;
+    if (item.embedType === 'YT') counts.YT += 1;
+    if (item.embedType === 'TT') counts.TT += 1;
+    if (isAdditionalVideoItem(item)) counts.EXTVIDEO += 1;
+  }
+}
+
+function collectFilterCounts() {
+  const counts = createFilterCounts();
+  state.items.list.forEach(function(item) { countFilterItem(counts, item); });
   return counts;
 }
 
 function applyFilterSort() {
-  if (!state.ui.grid) return;
+  if (state.ui.disposed || !state.ui.grid) return;
+  for (const group of state.items.visualGroups) if (group.length>1) refreshVisualGroup(group);
+  syncMediaOrder();
   invalidateVisibilityStats('filter-sort');
-  const list = state.items.list;
-  list.forEach(function(it) {
-    const hideNoise = state.cfg.noiseHide && it.__isNoise;
-    const hideHidden = state.cfg.hiddenHide && (it.__allHidden || it.__autoHidden);
-    const failed = !!it.__failed;
-    const show = passesFilter(it) && !hideNoise && !it.__hashDup && !failed && !hideHidden;
-    it.__hideReason = show ? '' : getHideReasonCode(it);
+  const counts = createFilterCounts();
+  const reasons = Object.create(null);
+  let visible = 0;
+  state.items.list.forEach(function(it) {
+    countFilterItem(counts, it);
+    const reason = getHideReasonCode(it, true);
+    const show = !reason;
     const card = it.card;
     if (card) {
-      if (failed) {
+      if (it.__failed) {
         if (card.parentNode) card.parentNode.removeChild(card);
       } else {
-        card.classList.toggle('is-hidden', !show);
+        if (card.classList.contains('is-hidden') === show) card.classList.toggle('is-hidden', !show);
       }
     }
+    it.__hideReason = reason;
+    if (reason) reasons[reason] = (reasons[reason] || 0) + 1;
+    else visible++;
   });
+  state.ui.visibilityStats = {visible:visible, counts:reasons, hidden:[]};
+  state.ui.visibilityStatsDirty = false;
+  state.ui.visibilityStatsLimit = 0;
   applyErrorVis();
-  updateInfo();
-  updateChipUI();
+  updateChipUI(counts);
   if (state.thumb && !state.thumb.observer && typeof state.thumb.scanNow === 'function') state.thumb.scanNow();
 }
 
-function updateChipUI() {
-  if (!state.ui.filterBar) return;
+function setTextIfChanged(el, value) {
+  if (el && el.textContent !== value) el.textContent = value;
+}
+function setAttrIfChanged(el, key, value) {
+  if (el && el.getAttribute(key) !== value) el.setAttribute(key, value);
+}
+function setPressed(btn, active) {
+  if (!btn) return;
+  if (btn.classList.contains('active') !== active) btn.classList.toggle('active', active);
+  setAttrIfChanged(btn, 'aria-pressed', String(active));
+}
+
+function updateChipUI(precomputedCounts) {
+  if (state.ui.disposed || !state.ui.filterBar) return;
   const f = state.filter.key;
-  const counts = collectFilterCounts();
-  Array.from(state.ui.filterBar.querySelectorAll('[data-filter]')).forEach(function(btn) {
+  const counts = precomputedCounts || collectFilterCounts();
+  (state.ui.filterButtons || Array.from(state.ui.filterBar.querySelectorAll('[data-filter]'))).forEach(function(btn) {
     const key = btn.getAttribute('data-filter') || 'ALL';
-    const active = key === f;
-    const baseLabel = (btn.dataset && btn.dataset.baseLabel) ? btn.dataset.baseLabel : key;
-    const count = counts[key] || 0;
-    const label = baseLabel + ' ' + count;
-    btn.classList.toggle('active', active);
-    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    if (btn.textContent !== label) btn.textContent = label;
-    if (btn.getAttribute('aria-label') !== label) btn.setAttribute('aria-label', label);
+    const label = (btn.dataset.baseLabel || key) + ' ' + (counts[key] || 0);
+    setPressed(btn, key === f);
+    setTextIfChanged(btn, label);
+    setAttrIfChanged(btn, 'aria-label', label);
   });
-  const boostBtn = state.ui.filterBar.querySelector('[data-action="boost-crawl"]');
-  if (boostBtn) {
-    const active = !!state.crawl.allowUserBoost;
-    boostBtn.classList.toggle('active', active);
-    boostBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
-  }
-  const hiddenBtn = state.ui.filterBar.querySelector('[data-action="toggle-hidden"]');
-  if (hiddenBtn) {
-    const active = !state.cfg.hiddenHide;
-    hiddenBtn.classList.toggle('active', active);
-    hiddenBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
-  }
+  const boostBtn = state.ui.boostChip || state.ui.filterBar.querySelector('[data-action="boost-crawl"]');
+  const hiddenBtn = state.ui.hiddenChip || state.ui.filterBar.querySelector('[data-action="toggle-hidden"]');
+  const noiseBtn = state.ui.noiseChip;
+  setPressed(boostBtn, !!state.crawl.allowUserBoost);
+  setPressed(hiddenBtn, !state.cfg.hiddenHide);
+  setPressed(noiseBtn, !state.cfg.noiseHide);
+  setTextIfChanged(hiddenBtn, state.cfg.hiddenHide ? '非表示も表示' : '非表示を隠す');
+  setTextIfChanged(noiseBtn, state.cfg.noiseHide ? 'ノイズも表示' : 'ノイズを隠す');
 }
 
 function setFilter(key, opts) {
@@ -1922,6 +1716,79 @@ function isOriginallyHidden(el, hiddenCache) {
   return false;
 }
 
+function isLiveCssHidden(el, cache) {
+  if (!el || !el.isConnected || el.ownerDocument !== document) return false;
+  if (cache && cache.has(el)) return cache.get(el);
+  let hidden=false;
+  try {
+    const own=getComputedStyle(el);
+    hidden=own.display==='none' || own.visibility==='hidden' || own.visibility==='collapse';
+    for(let n=el.parentElement;!hidden && n && n.nodeType===1;n=n.parentElement) {
+      if(getComputedStyle(n).display==='none')hidden=true;
+    }
+  }catch(e){}
+  if(cache)cache.set(el,hidden);
+  return hidden;
+}
+
+function liveImageSourceElement(el,cache) {
+  if(!el || el.ownerDocument!==document || !el.isConnected)return null;
+  if(el.tagName==='A' && !String(el.textContent || '').trim()){
+    const imgs=el.querySelectorAll('img');
+    if(imgs.length===1)return imgs[0];
+  }
+  return el;
+}
+
+function noteLiveImageVisibility(url,el,hidden) {
+  if(!url || !el)return;
+  const map=state.items.liveImageVisibility;
+  let rec=map.get(url);
+  if(!rec){
+    if(map.size>=4096)return;
+    rec={sources:[],uncertain:false};map.set(url,rec);
+  }
+  if(rec.uncertain)return;
+  const existing=rec.sources.find(v=>v.ref && v.ref.deref()===el);
+  if(existing){
+    if(existing.hidden!==hidden){existing.hidden=hidden;state.items.liveVisibilityDirty=true;}
+  }else if(typeof WeakRef==='function' && rec.sources.length<8){
+    rec.sources.push({ref:new WeakRef(el),hidden});state.items.liveVisibilityDirty=true;
+  }else{
+    rec.uncertain=true;state.items.liveVisibilityDirty=true;
+  }
+}
+
+function isExcludedLiveImage(url) {
+  const rec=state.items.liveImageVisibility.get(url);
+  return !!(rec && !rec.uncertain && rec.sources.length && rec.sources.every(v=>v.hidden));
+}
+
+function isSourceSuppressed(item) {
+  return !!(item && item.kind==='img' && item.__sourceSuppressed);
+}
+
+function reconcileLiveImageVisibility() {
+  if(!state.items.liveVisibilityDirty)return;
+  state.items.liveVisibilityDirty=false;
+  let changed=false;
+  for(const item of state.items.list){
+    if(item.kind!=='img')continue;
+    const hidden=isExcludedLiveImage(item.requestUrl);
+    if(hidden===!!item.__sourceSuppressed)continue;
+    item.__sourceSuppressed=hidden;changed=true;
+    if(item.card && hidden)item.card.classList.add('is-hidden');
+    if(hidden && item.__thumbLoading && item.__thumbCtx && item.__thumbCtx.abort){
+      item.__thumbCtx.abort('source-css-hidden');
+      if(item.__thumbImg)item.__thumbImg.src=BLANK_GIF;
+    }
+  }
+  if(changed){
+    invalidateVisibilityStats('source-css-hidden');
+    scheduleApplyFilterSort('source-css-hidden');
+  }
+}
+
 function getDocumentCompareKey(url, baseUrl) {
   try {
     const u = new URL(String(url), baseUrl || location.href);
@@ -1932,8 +1799,39 @@ function getDocumentCompareKey(url, baseUrl) {
   }
 }
 
-function scoreThumbnailLike(el, meta, absUrl) {
-  if (!el || el.nodeType !== 1) return 0;
+function getThumbSourceFacts(el, meta) {
+  if (!el || el.nodeType !== 1) return null;
+  const pageUrl = (meta && meta.pageUrl) || location.href;
+  const mediaBase = (meta && meta.mediaBase) || pageUrl;
+  const cls = String((el.className || '') + ' ' + (el.id || '')).toLowerCase();
+  const tag = el.tagName ? el.tagName.toUpperCase() : '';
+  const anchor = tag === 'A' ? el : (el.closest ? el.closest('a[href]') : null);
+  const href = anchor ? (anchor.getAttribute('href') || '').trim() : '';
+  const anchorHref = resolveMediaReference(href, mediaBase);
+  const nonMedia = !!href && !isDirectImageUrl(anchorHref) && !isVideoUrl(anchorHref);
+  let sameSitePageLink = false;
+  if (anchorHref && nonMedia) {
+    try {
+      const linkUrl = new URL(anchorHref, mediaBase);
+      sameSitePageLink = linkUrl.origin === new URL(pageUrl).origin &&
+        getDocumentCompareKey(linkUrl.href, pageUrl) !== getDocumentCompareKey(pageUrl, pageUrl);
+    } catch (e) {}
+  }
+  return {
+    outsideBody: !inBodyScope(el),
+    avoid: inAvoidScope(el),
+    classHint: /(thumb|thumbnail|related|ranking|recommend|popular|pickup|sidebar|widget|pager|list)/.test(cls),
+    relatedHint: /(related|recommend|ranking|pickup|popular|list)/.test(cls),
+    nonMedia: nonMedia,
+    articleHint: /\/archives\/\d+|\.html(?:$|[?#])|\/(entry|article|post|news)\//i.test(href),
+    sameSitePageLink: sameSitePageLink,
+    hasImgContext: tag === 'IMG' || !!(anchor && anchor.querySelector && anchor.querySelector('img'))
+  };
+}
+
+function scoreThumbnailLike(el, meta, absUrl, sourceFacts) {
+  const facts = sourceFacts || getThumbSourceFacts(el, meta);
+  if (!facts) return 0;
   const w = (meta && meta.width) ? meta.width : 0;
   const h = (meta && meta.height) ? meta.height : 0;
   let score = 0;
@@ -1953,40 +1851,15 @@ function scoreThumbnailLike(el, meta, absUrl) {
     score += 1;
   }
 
-  if (!inBodyScope(el)) score += 2;
-  if (inAvoidScope(el)) score += 2;
-
-  const cls = String((el.className || '') + ' ' + (el.id || '')).toLowerCase();
-  if (/(thumb|thumbnail|related|ranking|recommend|popular|pickup|sidebar|widget|pager|list)/.test(cls)) score += 1;
-
-  let anchor = null;
-  let anchorHref = '';
-  let relatedArticleSquare = false;
-  if (el.tagName && el.tagName.toUpperCase() === 'A') anchor = el;
-  else if (el.closest) anchor = el.closest('a[href]');
-  if (anchor) {
-    const href = (anchor.getAttribute('href') || '').trim();
-    anchorHref = href;
-    if (href) {
-      if (!isImageUrl(href) && !isVideoUrl(href)) score += 1;
-      if (/\/archives\/\d+|\.html(?:$|[?#])|\/(entry|article|post|news)\//i.test(href)) score += 2;
-    }
-  }
-  if (w && h && anchorHref) {
-    const squareishSmall = w <= 340 && h <= 340 && Math.abs(w - h) <= 24;
-    if (squareishSmall) {
-      try {
-        const linkUrl = new URL(anchorHref, location.href);
-        const nonMediaLink = !isImageUrl(anchorHref) && !isVideoUrl(anchorHref);
-        const sameOrigin = linkUrl.origin === location.origin;
-        const sameDoc = getDocumentCompareKey(linkUrl.toString(), location.href) === getDocumentCompareKey(location.href, location.href);
-        if (sameOrigin && sameDoc === false && nonMediaLink) {
-          relatedArticleSquare = true;
-          score += 4;
-          if (/(related|recommend|ranking|pickup|popular|list)/.test(cls)) score += 1;
-        }
-      } catch (e) {}
-    }
+  if (facts.outsideBody) score += 2;
+  if (facts.avoid) score += 2;
+  if (facts.classHint) score += 1;
+  if (facts.nonMedia) score += 1;
+  if (facts.articleHint) score += 2;
+  const relatedArticleSquare = !!(w && h && w <= 340 && h <= 340 && Math.abs(w-h) <= 24 && facts.sameSitePageLink);
+  if (relatedArticleSquare) {
+    score += 4;
+    if (facts.relatedHint) score += 1;
   }
 
   const u = String(absUrl || '').toLowerCase();
@@ -2024,54 +1897,50 @@ function pickAutoHiddenReason(a, b) {
   return rb || ra || '';
 }
 
-function getAutoHiddenReason(el, meta, absUrl, thumbScore) {
-  if (!el || el.nodeType !== 1) return '';
-  const tag = el.tagName ? el.tagName.toUpperCase() : '';
-  let anchor = null;
-  if (tag === 'A') anchor = el;
-  else if (el.closest) anchor = el.closest('a[href]');
-  const hasImgContext = tag === 'IMG' || !!(anchor && anchor.querySelector && anchor.querySelector('img'));
-  if (!hasImgContext) return '';
-
-  const score = Number.isFinite(thumbScore) ? thumbScore : scoreThumbnailLike(el, meta, absUrl);
-  let sameSitePageLink = false;
-  if (anchor) {
-    const href = (anchor.getAttribute('href') || '').trim();
-    if (href && !isImageUrl(href) && !isVideoUrl(href)) {
-      try {
-        const linkUrl = new URL(href, location.href);
-        sameSitePageLink = linkUrl.origin === location.origin &&
-          getDocumentCompareKey(linkUrl.toString(), location.href) !== getDocumentCompareKey(location.href, location.href);
-      } catch (e) {}
-    }
-  }
-
-  if (sameSitePageLink && score >= (state.cfg.thumbLikeMinScore || 0)) return 'pageLinkThumb';
+function getAutoHiddenReason(el, meta, absUrl, thumbScore, sourceFacts) {
+  const facts = sourceFacts || getThumbSourceFacts(el, meta);
+  if (!facts || !facts.hasImgContext) return '';
+  const score = Number.isFinite(thumbScore) ? thumbScore : scoreThumbnailLike(el, meta, absUrl, facts);
+  if (facts.sameSitePageLink && score >= (state.cfg.thumbLikeMinScore || 0)) return 'pageLinkThumb';
   if (score >= (state.cfg.thumbLikeMinScore || 0)) return 'thumbScore';
   return '';
 }
 
-function collectImageUrls(img) {
+function collectImageUrls(img, baseUrl) {
   const urls = [];
+  const picture = img.parentElement && img.parentElement.tagName === 'PICTURE' ? img.parentElement : null;
   const seenCanon = new Set();
   function add(u) {
     if (!u) return;
-    const s = String(u).trim();
-    if (!s) return;
-    if (!isImgTagCandidateUrl(s)) return;
-    const canon = canonicalMediaKey(s, 'img') || s;
+    const s = resolveMediaReference(u, baseUrl);
+    if (!s || !isImgTagCandidateUrl(s)) return;
+    const canon = picture ? s : (canonicalMediaKey(s, 'img') || s);
     if (seenCanon.has(canon)) return;
     seenCanon.add(canon);
     urls.push(s);
   }
-  const srcset = img.getAttribute('srcset') || img.getAttribute('data-srcset');
-  const best = pickBestFromSrcset(srcset);
-  add(best);
-  add(img.currentSrc);
+  // Explicit originals and lazy srcsets may be present before the live
+  // element has selected a real source. Never use a detached DOM's .src.
   add(img.getAttribute('data-original'));
+  if (picture && img.ownerDocument === document && img.currentSrc) add(img.currentSrc);
+  if (img.ownerDocument !== document || !img.currentSrc) {
+    if (picture) for (const source of picture.children) {
+      if (source === img) break;
+      if (source.tagName !== 'SOURCE') continue;
+      const type = source.getAttribute('type') || '';
+      if (type && !/^image\/(?:jpeg|png|gif|webp|avif|bmp)$/i.test(type)) continue;
+      const media = source.getAttribute('media');
+      if (media && (!window.matchMedia || !window.matchMedia(media).matches)) continue;
+      const candidate = pickBestFromSrcset(source.getAttribute('data-srcset') || source.getAttribute('srcset'));
+      if (candidate && isImgTagCandidateUrl(resolveMediaReference(candidate, baseUrl))) { add(candidate); break; }
+    }
+  }
+  add(pickBestFromSrcset(img.getAttribute('data-srcset')));
+  add(pickBestFromSrcset(img.getAttribute('srcset')));
   add(img.getAttribute('data-src'));
   add(img.getAttribute('data-lazy'));
-  add(img.src);
+  if (img.ownerDocument === document) add(img.currentSrc);
+  add(img.getAttribute('src'));
   return urls;
 }
 
@@ -2175,9 +2044,118 @@ function queryAllIncludingRoot(root, selector) {
   return out;
 }
 
-function extractFromDocument(doc, source, baseUrl) {
+// Use element paths rather than layout reads or retaining parsed documents.
+function mediaOrderPath(el, cache) {
+  if (!el || el.nodeType !== 1) return [Number.MAX_SAFE_INTEGER];
+  const path = [];
+  for (let node = el; node && node.parentElement; node = node.parentElement) {
+    const parent = node.parentElement;
+    let positions = cache.get(parent);
+    if (!positions) {
+      positions = new WeakMap();
+      let i = 0;
+      for (const child of parent.children) positions.set(child, i++);
+      cache.set(parent, positions);
+    }
+    path.push(positions.get(node) || 0);
+  }
+  return path.reverse();
+}
+
+function compareOrderPath(a,b) {
+  for (let i=0;i<Math.min(a.length,b.length);i++) {
+    if (a[i] !== b[i]) return a[i]-b[i];
+  }
+  return a.length-b.length;
+}
+
+function pageOrderRank(url) {
+  const key = normalizeCrawlUrl(url);
+  if (key === normalizeCrawlUrl(location.href)) return [0];
+  try {
+    const a = new URL(url,location.href), b = new URL(location.href);
+    const p = a.searchParams.get('p') || a.searchParams.get('page');
+    a.searchParams.delete('p'); a.searchParams.delete('page');
+    b.searchParams.delete('p'); b.searchParams.delete('page');
+    if (p && /^\d+$/.test(p) && a.origin+a.pathname+a.search===b.origin+b.pathname+b.search) return [1,0,Number(p)];
+  } catch(e) {}
+  return state.crawl.pageOrder.get(key) || [3];
+}
+
+function recordCrawlPageOrder(url,parent,priority,index) {
+  if (state.crawl.pageOrder.has(url)) return;
+  const rank = parent ? pageOrderRank(parent) : [0];
+  const path = rank[0] === 0 ? (priority ? [1,1,index] : [2,index]) : rank.concat(priority ? 0 : 1,index);
+  state.crawl.pageOrder.set(url,path);
+}
+
+function refreshMediaOrder(item,cache) {
+  const el = item.__orderRef && item.__orderRef.deref();
+  if (el && el.isConnected && el.ownerDocument === document) item.__orderPath = mediaOrderPath(el,cache);
+}
+
+function compareMediaOrder(a,b) {
+  return compareOrderPath(a.__pageRank || pageOrderRank(a.__orderPage || a.pageUrl),b.__pageRank || pageOrderRank(b.__orderPage || b.pageUrl)) ||
+    (a.__orderPage === b.__orderPage ? 0 : String(a.__orderPage).localeCompare(String(b.__orderPage))) ||
+    compareOrderPath(a.__orderPath || [],b.__orderPath || []) || (a.index ?? Number.MAX_SAFE_INTEGER)-(b.index ?? Number.MAX_SAFE_INTEGER);
+}
+
+function keepEarlierMediaOrder(existing,item) {
+  if (!existing.__orderPath || !item.__orderPath) return;
+  if (existing.__orderRef && existing.__orderRef.deref() === (item.__orderRef && item.__orderRef.deref())) {
+    existing.__orderPath=item.__orderPath;
+    return;
+  }
+  if (compareMediaOrder(item,existing) < 0) {
+    existing.__orderPage=item.__orderPage;
+    existing.__orderPath=item.__orderPath;
+    existing.__orderRef=item.__orderRef;
+    existing.pageLabel=item.pageLabel;
+    state.items.orderDirty=true;
+    if (existing.card) setTextIfChanged(existing.card.querySelector('.chip-page'),existing.pageLabel);
+  }
+}
+
+function syncMediaOrder() {
+  if (!state.items.orderDirty || !state.ui.grid || state.ui.disposed) return;
+  state.items.orderDirty=false;
+  const cache=new WeakMap();
+  const cards=state.items.list.filter(it=>it.card && it.card.parentNode===state.ui.grid);
+  for (const it of cards) {
+    refreshMediaOrder(it,cache);
+    it.__pageRank=pageOrderRank(it.__orderPage || it.pageUrl);
+  }
+  cards.sort((a,b)=>compareMediaOrder(a.__visualOrder || a,b.__visualOrder || b) || a.index-b.index);
+  let cursor=state.ui.grid.firstElementChild;
+  for (const it of cards) {
+    if (it.card===cursor) cursor=cursor.nextElementSibling;
+    else state.ui.grid.insertBefore(it.card,cursor);
+    delete it.__pageRank;
+  }
+}
+
+function extractFromDocument(doc, source, baseUrl, responsiveHidden) {
   const items = [];
+  const orderCache = new WeakMap();
+  const cssHiddenCache=new WeakMap();
+  const makeOrderedItem = (kind,url,meta,base) => {
+    if(kind==='img'){
+      const el=liveImageSourceElement(meta.el,cssHiddenCache);
+      if(el){
+        const hidden=(meta.origHidden || el!==meta.el) && (isLiveCssHidden(el,cssHiddenCache) || (el!==meta.el && isLiveCssHidden(meta.el,cssHiddenCache)));
+        const observed=resolveMediaReference(url,meta.mediaBase || base);
+        for(const v of [observed,meta.identityUrl].concat(meta.pictureFallbackUrls || [])){
+          if(v)noteLiveImageVisibility(v,el,!!hidden);
+        }
+        if(hidden)return null;
+      }
+    }
+    meta.orderPath=mediaOrderPath(meta.el,orderCache);
+    return makeItem(kind,url,meta,base);
+  };
   const strictBody = !!state.cfg.strictBodyOnly;
+  const standaloneMedia = doc && doc.nodeType === 9 && isMediaDocument(doc);
+  const mediaBase = getMediaDocumentBase(doc, baseUrl);
   const hiddenCache = typeof WeakMap === 'function' ? new WeakMap() : null;
   const bodyScopeCache = typeof WeakMap === 'function' ? new WeakMap() : null;
   const avoidScopeCache = typeof WeakMap === 'function' ? new WeakMap() : null;
@@ -2198,31 +2176,48 @@ function extractFromDocument(doc, source, baseUrl) {
       if (avoidScopeCache) avoidScopeCache.set(el, inAvoid);
     }
     return {
-      skip: !!((strictBody && !inBody) || inAvoid),
-      scope: inBody ? 'body' : ''
+      skip: !!((strictBody && !inBody && !(standaloneMedia && el.parentElement === doc.body && /^(IMG|VIDEO)$/.test(el.tagName))) || inAvoid),
+      scope: inBody || (standaloneMedia && el.parentElement === doc.body && /^(IMG|VIDEO)$/.test(el.tagName)) ? 'body' : ''
     };
   };
   const imgs = queryAllIncludingRoot(doc, 'img');
   imgs.forEach(function(img) {
+    if (responsiveHidden && responsiveHidden.has(img)) return;
     const scopeInfo = getScopedInfo(img);
     if (scopeInfo.skip) return;
-    const urls = collectImageUrls(img);
+    const urls = collectImageUrls(img, mediaBase);
     if (!urls.length) return;
     const size = getImgSize(img);
     const scope = scopeInfo.scope;
     const origHidden = isOriginallyHidden(img, hiddenCache);
-    urls.forEach(function(u) {
-      if (!isImgTagCandidateUrl(u)) return;
-      items.push(makeItem('img', u, {
-        width: size.w,
-        height: size.h,
+    const loadedUrl = resolveMediaReference(img.ownerDocument === document ? (img.currentSrc || img.getAttribute('src')) : img.getAttribute('src'), mediaBase);
+    const picture = img.parentElement && img.parentElement.tagName === 'PICTURE';
+    const consumed = new Set();
+    for (const u of urls) {
+      if (consumed.has(u)) continue;
+      if (!isImgTagCandidateUrl(u)) continue;
+      const sameSource = u === loadedUrl;
+      // A picture describes alternative renditions of one displayed image.
+      // Keep fallback candidates rather than a visible card per source.
+      if (picture && sameSource && !passesSize({width:size.w,height:size.h})) continue;
+      const related = picture ? urls.filter(v=>v!==u) : urls.filter(v=>v!==u && !consumed.has(v) && sameDeclaredRendition(u,v));
+      related.forEach(v=>consumed.add(v));
+      const imDirect = getImgurDirectMedia(u);
+      items.push(makeOrderedItem(imDirect && imDirect.video ? 'video' : 'img', u, {
+        width: sameSource ? size.w : 0,
+        height: sameSource ? size.h : 0,
         scope: scope,
         origHidden: origHidden,
         source: source,
         openUrl: u,
+        mediaBase: mediaBase,
+        identityUrl: getDeclaredOriginalIdentity(img, u, mediaBase),
+        pictureFallbackUrls: related.length ? related.slice(0,4) : null,
+        renditionAliases: !picture ? related.slice(0,4) : null,
         el: img
       }, baseUrl));
-    });
+      if (picture) break;
+    }
   });
 
   const videos = queryAllIncludingRoot(doc, 'video');
@@ -2232,19 +2227,22 @@ function extractFromDocument(doc, source, baseUrl) {
     const scope = scopeInfo.scope;
     const origHidden = isOriginallyHidden(video, hiddenCache);
     const vsrcs = [];
-    if (video.currentSrc) vsrcs.push(video.currentSrc);
-    if (video.src) vsrcs.push(video.src);
+    if (video.ownerDocument === document && video.currentSrc) vsrcs.push(video.currentSrc);
+    vsrcs.push(video.getAttribute('src'));
     Array.from(video.querySelectorAll('source')).forEach(function(s) {
-      if (s.src) vsrcs.push(s.src);
+      vsrcs.push(s.getAttribute('src'));
     });
-    vsrcs.forEach(function(u) {
+    const current = video.ownerDocument === document ? resolveMediaReference(video.currentSrc, mediaBase) : '';
+    const captured = current && !video.getAttribute('poster') ? captureSmallVideoFrame(video) : '';
+    uniq(vsrcs.map(function(u) { return resolveMediaReference(u, mediaBase); })).forEach(function(u) {
       if (!isVideoUrl(u)) return;
-      items.push(makeItem('video', u, {
+      items.push(makeOrderedItem('video', u, {
         width: parseInt(video.getAttribute('width') || 0, 10) || 0,
         height: parseInt(video.getAttribute('height') || 0, 10) || 0,
         scope: scope,
         origHidden: origHidden,
-        poster: video.getAttribute('poster') || '',
+        poster: resolveMediaReference(video.getAttribute('poster'), mediaBase),
+        capturedPoster: u === current ? captured : '',
         source: source,
         openUrl: u,
         el: video
@@ -2258,15 +2256,19 @@ function extractFromDocument(doc, source, baseUrl) {
     if (scopeInfo.skip) return;
     const href = a.getAttribute('href');
     if (!href || href.startsWith('#')) return;
-    const abs = normalizeUrl(href, baseUrl || location.href);
+    const concreteHref = resolveMediaReference(href, mediaBase);
+    const abs = normalizeUrl(concreteHref, mediaBase);
     if (!abs) return;
     const scope = scopeInfo.scope;
     const origHidden = isOriginallyHidden(a, hiddenCache);
     const linkImg = a.querySelector ? a.querySelector('img') : null;
+    if (responsiveHidden && linkImg && !String(a.textContent || '').trim() &&
+        Array.from(a.querySelectorAll('img')).every(img=>responsiveHidden.has(img))) return;
     const linkSize = linkImg ? getImgSize(linkImg) : { w: 0, h: 0 };
-    const embedFromHref = getEmbedInfo(abs.abs);
-    const hrefIsDirectImage = isDirectImageUrl(abs.abs);
-    const hrefIsDirectVideo = isVideoUrl(abs.abs);
+    const imPost = getImgurPost(concreteHref);
+    const embedFromHref = imPost ? {type:'IMGUR',url:imPost.embedUrl,openUrl:imPost.openUrl} : (getImgurDirectMedia(concreteHref) ? null : (getAdditionalVideoInfo(concreteHref) || getEmbedInfo(abs.abs)));
+    const hrefIsDirectImage = isDirectImageUrl(concreteHref) || isDirectImageUrl(abs.abs);
+    const hrefIsDirectVideo = isVideoUrl(concreteHref) || isVideoUrl(abs.abs);
     const hrefIsDirectMedia = hrefIsDirectImage || hrefIsDirectVideo;
     const textUrl = findFirstHttpUrlInText(a.textContent || '');
     let textAbs = null;
@@ -2276,7 +2278,7 @@ function extractFromDocument(doc, source, baseUrl) {
     if (textUrl) {
       textAbs = normalizeUrl(textUrl, baseUrl || location.href);
       if (textAbs) {
-        textEmbed = getEmbedInfo(textAbs.abs);
+        textEmbed = getAdditionalVideoInfo(textUrl) || getEmbedInfo(textAbs.abs);
         textIsDirectImage = isDirectImageUrl(textAbs.abs);
         textIsDirectVideo = isVideoUrl(textAbs.abs);
       }
@@ -2295,7 +2297,7 @@ function extractFromDocument(doc, source, baseUrl) {
     const embed = embedFromHref || embedFromText;
     if (embed) {
       const previewText = getEmbedPreviewTextFromElement(a, [abs.abs, embed.openUrl || '', embed.url || '', textAbs ? textAbs.abs : '']);
-      items.push(makeItem('embed', abs.abs, {
+      items.push(makeOrderedItem('embed', abs.abs, {
         width: 0,
         height: 0,
         scope: scope,
@@ -2309,8 +2311,8 @@ function extractFromDocument(doc, source, baseUrl) {
       }, baseUrl));
     }
     if (!embedFromHref && (hrefIsDirectVideo || directVideoFromText)) {
-      const mediaUrl = directVideoFromText && textAbs ? textAbs.abs : abs.abs;
-      items.push(makeItem('video', mediaUrl, {
+      const mediaUrl = directVideoFromText && textAbs ? (isVideoUrl(textUrl) ? resolveMediaReference(textUrl, mediaBase) : (textAbs.sourceAbs || textAbs.abs)) : (isVideoUrl(concreteHref) ? concreteHref : (abs.sourceAbs || abs.abs));
+      items.push(makeOrderedItem('video', mediaUrl, {
         width: 0,
         height: 0,
         scope: scope,
@@ -2322,10 +2324,14 @@ function extractFromDocument(doc, source, baseUrl) {
         el: a
       }, baseUrl));
     } else if (!embedFromHref && (hrefIsDirectImage || directImageFromText)) {
-      const mediaUrl = directImageFromText && textAbs ? textAbs.abs : abs.abs;
-      items.push(makeItem('img', mediaUrl, {
-        width: linkSize.w,
-        height: linkSize.h,
+      const mediaUrl = directImageFromText && textAbs ? (isDirectImageUrl(textUrl) ? resolveMediaReference(textUrl, mediaBase) : (textAbs.sourceAbs || textAbs.abs)) : (isDirectImageUrl(concreteHref) ? concreteHref : (abs.sourceAbs || abs.abs));
+      const thumbUrl = linkImg ? resolveMediaReference(linkImg.ownerDocument === document ? (linkImg.currentSrc || linkImg.getAttribute('src')) : linkImg.getAttribute('src'), mediaBase) : '';
+      const sameSource = !!thumbUrl && thumbUrl === mediaUrl;
+      items.push(makeOrderedItem('img', mediaUrl, {
+        width: sameSource ? linkSize.w : 0,
+        height: sameSource ? linkSize.h : 0,
+        directImageLink: true,
+        mediaBase: mediaBase,
         scope: scope,
         origHidden: origHidden,
         source: source,
@@ -2336,20 +2342,23 @@ function extractFromDocument(doc, source, baseUrl) {
     }
   });
 
-  const iframes = queryAllIncludingRoot(doc, 'iframe[src]');
+  const iframes = queryAllIncludingRoot(doc, 'iframe[src],iframe[data-src],iframe[data-lazy-src],script[src*="embed.nicovideo.jp/watch/"]');
   iframes.forEach(function(fr) {
     const scopeInfo = getScopedInfo(fr);
     if (scopeInfo.skip) return;
-    const src = fr.getAttribute('src');
-    if (!src) return;
-    const abs = normalizeUrl(src, baseUrl || location.href);
-    if (!abs) return;
-    const info = getEmbedInfoFromIframe(abs.abs);
+    let abs = null, info = null;
+    for (const attr of ['src','data-src','data-lazy-src']) {
+      const src = fr.getAttribute(attr);
+      if (!src) continue;
+      const candidate = normalizeUrl(src, mediaBase);
+      const parsed = candidate && (getEmbedInfoFromIframe(resolveMediaReference(src, mediaBase) || candidate.abs) || getEmbedInfoFromIframe(candidate.abs));
+      if (parsed && (fr.tagName !== 'SCRIPT' || parsed.type === 'NICO')) { abs = candidate; info = parsed; break; }
+    }
     if (!info) return;
     const scope = scopeInfo.scope;
-    const origHidden = isOriginallyHidden(fr, hiddenCache);
+    const origHidden = isOriginallyHidden(fr.tagName === 'SCRIPT' ? fr.parentElement : fr, hiddenCache);
     const previewText = getEmbedPreviewTextFromElement(fr, [abs.abs, info.openUrl || '', info.embedUrl || '']);
-    items.push(makeItem('embed', info.openUrl, {
+    items.push(makeOrderedItem('embed', info.openUrl, {
       width: 0,
       height: 0,
       scope: scope,
@@ -2372,7 +2381,7 @@ function extractFromDocument(doc, source, baseUrl) {
     const scope = scopeInfo.scope;
     const origHidden = isOriginallyHidden(el, hiddenCache);
     const previewText = getEmbedPreviewTextFromElement(el, [info.openUrl || '', info.embedUrl || '']);
-    items.push(makeItem('embed', info.openUrl, {
+    items.push(makeOrderedItem('embed', info.openUrl, {
       width: 0,
       height: 0,
       scope: scope,
@@ -2416,14 +2425,18 @@ function parseCssUrls(value) {
 
 function extractBackgrounds() {
   const items = [];
+  const orderCache = new WeakMap();
   const selector = '[style*="background"], [data-bg], [data-background], [data-bgurl]';
   const hiddenCache = typeof WeakMap === 'function' ? new WeakMap() : null;
-  const nodes = Array.from(document.querySelectorAll(selector)).slice(0, state.cfg.maxBgChecks);
-  nodes.forEach(function(node) {
+  const nodes = document.querySelectorAll(selector);
+  let checked = 0;
+  for (const node of nodes) {
+    if (checked >= state.cfg.maxBgChecks) break;
     const scopeInfo = getCollectScopeInfo(node, !!state.cfg.strictBodyOnly);
-    if (scopeInfo.skip) return;
+    if (scopeInfo.skip) continue;
+    checked++;
     const rect = node.getBoundingClientRect ? node.getBoundingClientRect() : { width: 0, height: 0 };
-    if (rect.width * rect.height < state.cfg.minArea) return;
+    if (rect.width * rect.height < state.cfg.minArea) continue;
     const urls = [];
     if (node.dataset) {
       if (node.dataset.bg) urls.push(node.dataset.bg);
@@ -2437,6 +2450,10 @@ function extractBackgrounds() {
     const scope = scopeInfo.scope;
     const origHidden = isOriginallyHidden(node, hiddenCache);
     uniq(urls).forEach(function(u) {
+      const resolved=resolveMediaReference(u,location.href);
+      const hidden=origHidden && isLiveCssHidden(node);
+      noteLiveImageVisibility(resolved,node,!!hidden);
+      if(hidden)return;
       if (!isImageUrl(u)) return;
       items.push(makeItem('img', u, {
         width: Math.round(rect.width),
@@ -2445,10 +2462,11 @@ function extractBackgrounds() {
         origHidden: origHidden,
         source: 'bg',
         openUrl: u,
+        orderPath: mediaOrderPath(node,orderCache),
         el: node
       }));
     });
-  });
+  }
   return items;
 }
 
@@ -2532,32 +2550,86 @@ async function collectInitial() {
 }
 
 /* [08] dedup/groupBest */
+function collectDeclaredPreviewUrls(el, base) {
+  if (!el || !el.getAttribute) return [];
+  const out = [];
+  const add = function(raw) {
+    const url = resolveMediaReference(raw, base);
+    if (url && isImgTagCandidateUrl(url) && !out.includes(url)) out.push(url);
+  };
+  for (const key of ['poster','data-poster','data-thumbnail','data-thumb','data-preview-image']) add(el.getAttribute(key));
+  if (el.tagName !== 'VIDEO' && el.querySelector) {
+    const img = el.querySelector('img');
+    if (img) {
+      const size = getImgSize(img);
+      if (!size.w || !size.h || (size.w >= 100 && size.h >= 80)) {
+        for (const url of collectImageUrls(img, base)) add(url);
+      }
+    }
+  }
+  return out.slice(0,4);
+}
+
 function makeItem(kind, url, meta, baseUrl) {
-  const norm = normalizeUrl(url, baseUrl || location.href);
+  const resolved = resolveMediaReference(url, baseUrl || location.href);
+  const directImgur = (kind === 'video' || kind === 'img') ? getImgurDirectMedia(resolved) : null;
+  const concrete = directImgur ? directImgur.url : resolved;
+  const norm = normalizeUrl(concrete, baseUrl || location.href);
   if (!norm) return null;
+  const media = kind === 'img' || kind === 'video';
+  let knownImageHost = false;
+  if (kind === 'img') { try { knownImageHost = isKnownImageVariantHost(new URL(concrete).hostname.toLowerCase()); } catch (e) {} }
+  let requestUrl = media ? concrete : norm.canon;
+  let fallbackRequestUrl = '';
   const pageUrl = baseUrl || location.href;
+  if (kind === 'img' && !meta.directImageLink) {
+    // Keep legacy original-image inference for the explicitly recognized
+    // livedoor image CDN, but retain the observed URL if inference fails.
+    try {
+      const rawHost = new URL(concrete).hostname;
+      const originalHost = new URL(norm.canon).hostname;
+      if ((/(^|\.)blogimg\.jp$/i.test(rawHost) || rawHost === 'resize.blogsys.jp') &&
+          /(^|\.)blogimg\.jp$/i.test(originalHost) && norm.canon !== concrete) {
+        requestUrl = norm.canon;
+        fallbackRequestUrl = concrete;
+      }
+    } catch (e) {}
+  }
   const item = {
     id: 'f' + state.items.nextId++,
     kind: kind,
-    abs: norm.abs,
-    url: norm.canon,
+    abs: media && !knownImageHost ? concrete : norm.abs,
+    url: media && !knownImageHost ? requestUrl : norm.canon,
     rawUrl: url,
+    requestUrl: requestUrl,
+    fallbackRequestUrl: fallbackRequestUrl,
+    pictureFallbackUrls: meta.pictureFallbackUrls || null,
+    renditionAliases: meta.renditionAliases || null,
+    imgurFallbackUrls: null,
+    mediaBase: meta.mediaBase || pageUrl,
+    __directImageLink: !!meta.directImageLink,
     groupKey: norm.groupKey,
     host: norm.host,
     width: meta.width || 0,
     height: meta.height || 0,
     scope: meta.scope || '',
     source: meta.source || 'dom',
-    openUrl: meta.openUrl || norm.canon,
+    openUrl: media ? requestUrl : (meta.openUrl || norm.canon),
     poster: meta.poster || '',
+    previewUrls: kind === 'img' ? [] : collectDeclaredPreviewUrls(meta.el, meta.mediaBase || getMediaDocumentBase(meta.el, pageUrl)),
+    __capturedPoster: meta.capturedPoster || '',
     previewText: meta.previewText || '',
     embedType: meta.embedType || '',
     embedUrl: meta.embedUrl || '',
     pageUrl: pageUrl,
     pageLabel: computePageLabel(pageUrl),
+    __orderPage: normalizeCrawlUrl(pageUrl) || pageUrl,
+    __orderPath: meta.orderPath || mediaOrderPath(meta.el,new WeakMap()),
+    __orderRef: meta.el && meta.el.ownerDocument === document && typeof WeakRef === 'function' ? new WeakRef(meta.el) : null,
     index: state.items.list.length,
     card: null,
     __sourceEl: meta.el || null,
+    __thumbSourceFacts: null,
     __origHidden: !!meta.origHidden,
     __allHidden: !!meta.origHidden,
     __autoHidden: false,
@@ -2565,19 +2637,37 @@ function makeItem(kind, url, meta, baseUrl) {
     __noiseReason: '',
     __dupClusterUrls: []
   };
-  item.dedupKey = canonicalMediaKey(item.abs, kind);
+  const extraIdentity = kind === 'embed' && getAdditionalVideoInfo(item.openUrl);
+  const imgurIdentity = kind === 'embed' && item.embedType === 'IMGUR' && getImgurPost(item.openUrl);
+  const declaredDirect = directImgur && getImgurDirectMedia(meta.identityUrl);
+  item.dedupKey = imgurIdentity ? imgurIdentity.openUrl :
+    (extraIdentity ? 'provider:'+extraIdentity.type+':'+extraIdentity.identity :
+    canonicalMediaKey(media ? (declaredDirect ? declaredDirect.url : (directImgur ? concrete : (meta.identityUrl || concrete))) : item.abs, kind));
   item.__thumbScore = 0;
   if (kind === 'img') {
-    const thumbScore = scoreThumbnailLike(meta.el || null, meta, meta.openUrl || norm.canon);
-    const autoHiddenReason = getAutoHiddenReason(meta.el || null, meta, meta.openUrl || norm.canon, thumbScore);
+    const thumbMeta = Object.assign({}, meta, {pageUrl:pageUrl, mediaBase:item.mediaBase});
+    const sourceFacts = getThumbSourceFacts(meta.el || null, thumbMeta);
+    const thumbScore = scoreThumbnailLike(meta.el || null, thumbMeta, item.requestUrl, sourceFacts);
+    const autoHiddenReason = getAutoHiddenReason(meta.el || null, thumbMeta, item.requestUrl, thumbScore, sourceFacts);
     item.__thumbScore = thumbScore;
     item.__autoHidden = !!autoHiddenReason;
     item.__autoHiddenReason = autoHiddenReason;
+    if (state.cfg.releaseSourceEl && item.source === 'crawl' && item.__sourceEl && item.__sourceEl.ownerDocument !== document) item.__thumbSourceFacts = sourceFacts;
   }
   if (item.url) item.__dupClusterUrls.push(item.url);
   item.dupCount = 1;
   item.score = scoreItem(item);
   perfMeasureSourceEl(item);
+  // Parsed crawl documents are immutable here. Keep only the facts
+  // required by later dimension-based classification.
+  if (state.cfg.releaseSourceEl && item.kind !== 'img' && item.source === 'crawl' && item.__sourceEl && item.__sourceEl.ownerDocument !== document) {
+    releaseSourceEl(item, 'crawl-media-facts');
+  }
+  if (item.__thumbSourceFacts) {
+    const facts = item.__thumbSourceFacts;
+    releaseSourceEl(item, 'crawl-facts');
+    item.__thumbSourceFacts = facts;
+  }
   return item;
 }
 
@@ -2658,11 +2748,16 @@ function buildDupClusterDetail(item, maxUrls) {
 function mergeBest(target, candidate) {
   const keepId = target.id;
   const keepIndex = target.index;
+  const keepOrder = [target.__orderPage,target.__orderPath,target.__orderRef,target.pageLabel];
   const keepCard = target.card;
   const keepDup = target.dupCount || 1;
   const keepUrl = target.url;
+  const keepRequest = target.requestUrl || keepUrl;
   const keepEmbedType = target.embedType || '';
   const keepPreviewText = target.previewText || '';
+  const keepPoster = target.poster || '';
+  const keepCaptured = target.__capturedPoster || '';
+  const keepPreviewUrls = target.previewUrls || [];
   const keepThumbLoaded = target.__thumbLoaded;
   const keepThumbLoading = target.__thumbLoading;
   const keepThumbRetry = target.__thumbRetry;
@@ -2672,6 +2767,7 @@ function mergeBest(target, candidate) {
   const keepNoiseReason = target.__noiseReason;
   const keepAutoHidden = !!target.__autoHidden;
   const keepAutoHiddenReason = target.__autoHiddenReason || '';
+  if (keepRequest !== (candidate.requestUrl || candidate.url)) forgetVisualFingerprint(target);
   const keepHashDup = target.__hashDup;
   const keepFailed = target.__failed;
   const keepRenderUrl = target.__renderUrl;
@@ -2680,10 +2776,14 @@ function mergeBest(target, candidate) {
   Object.assign(target, candidate);
   target.id = keepId;
   target.index = keepIndex;
+  [target.__orderPage,target.__orderPath,target.__orderRef,target.pageLabel] = keepOrder;
   target.card = keepCard;
   target.dupCount = keepDup;
   if (!target.embedType && keepEmbedType) target.embedType = keepEmbedType;
   if (!target.previewText && keepPreviewText) target.previewText = keepPreviewText;
+  if (!target.poster && keepPoster) target.poster = keepPoster;
+  if (!target.__capturedPoster && keepRequest === (target.requestUrl || target.url)) target.__capturedPoster = keepCaptured;
+  target.previewUrls = uniqueThumbUrls(keepPreviewUrls.concat(target.previewUrls || [])).slice(0,4);
   target.__thumbLoaded = keepThumbLoaded;
   target.__thumbLoading = keepThumbLoading;
   target.__thumbRetry = keepThumbRetry;
@@ -2695,11 +2795,21 @@ function mergeBest(target, candidate) {
   target.__origHidden = target.__allHidden;
   target.__autoHidden = keepAutoHidden && !!candidate.__autoHidden;
   target.__autoHiddenReason = target.__autoHidden ? pickAutoHiddenReason(keepAutoHiddenReason, candidate.__autoHiddenReason || '') : '';
-  if (keepUrl === target.url) {
+  if (keepRequest === (target.requestUrl || target.url)) {
     target.__isNoise = keepIsNoise;
     target.__noiseReason = keepNoiseReason;
     target.__hashDup = keepHashDup;
     target.__failed = keepFailed;
+  } else {
+    if (keepIsNoise) state.items.noiseCount = Math.max(0, state.items.noiseCount - 1);
+    target.__isNoise = false;
+    target.__noiseReason = '';
+    target.__failed = false;
+    target.__hashDup = keepHashDup;
+    target.__resolvedRequestFor = '';
+    target.__resolvedRequestUrl = '';
+    invalidateVisibilityStats('media-source-change');
+    scheduleApplyFilterSort('media-source-change');
   }
   mergeDupCluster(target, candidate);
   target.score = scoreItem(target);
@@ -2708,13 +2818,62 @@ function mergeBest(target, candidate) {
 
 function adoptItem(item) {
   if (!item) return null;
+  if (item.kind==='img' && isExcludedLiveImage(item.requestUrl)) return null;
   if (!passesSize(item) && item.kind !== 'embed') return null;
   const key = item.dedupKey || item.url;
-  const existing = state.groupBest.get(key);
+  const existing = state.groupBest.get(key) || (item.kind === 'img' && (item.renditionAliases || []).map(u=>canonicalMediaKey(u,'img')).map(k=>state.groupBest.get(k)).find(it=>it && it.kind==='img'));
+  if (existing && existing.kind === 'img' && item.kind === 'img') {
+    for (const k of [key].concat((item.renditionAliases || []).map(u=>canonicalMediaKey(u,'img')))) {
+      if (k && !state.groupBest.has(k)) state.groupBest.set(k,existing);
+    }
+  }
   if (existing) {
+    keepEarlierMediaOrder(existing,item);
     const betterByScore = (item.score - existing.score) > 1e-6;
     const betterByQuality = isHigherQualityImageCandidate(item, existing);
-    if (betterByScore || betterByQuality) {
+    const bothImages = item.kind === 'img' && existing.kind === 'img';
+    const distinctRequest = bothImages && item.requestUrl !== existing.requestUrl;
+    if (bothImages) {
+      const related = distinctRequest && sameDeclaredRendition(existing.requestUrl,item.requestUrl);
+      const variants = uniqueThumbUrls((existing.pictureFallbackUrls || []).concat(item.pictureFallbackUrls || [], related ? [existing.requestUrl,item.requestUrl] : []));
+      if (variants.length) {
+        existing.pictureFallbackUrls=variants.filter(u=>u!==existing.requestUrl).slice(0,4);
+        item.pictureFallbackUrls=variants.filter(u=>u!==item.requestUrl).slice(0,4);
+      }
+    }
+    const preferExplicit = distinctRequest && item.__directImageLink && !existing.__directImageLink;
+    const keepExplicit = distinctRequest && existing.__directImageLink && !item.__directImageLink;
+    const a = bothImages && getImgurDirectMedia(item.requestUrl);
+    const b = bothImages && getImgurDirectMedia(existing.requestUrl);
+    const rendition = x => x && /^(?:[A-Za-z0-9]{5}|[A-Za-z0-9]{7})[sbtmlh]$/.test(x.id);
+    const preferOriginal = a && b && !rendition(a) && rendition(b) && a.ext === b.ext && b.id.slice(0,-1) === a.id;
+    const keepOriginal = a && b && rendition(a) && !rendition(b) && a.ext === b.ext && a.id.slice(0,-1) === b.id;
+    const newImgurAlias = a && b && a.ext === b.ext && item.requestUrl !== existing.requestUrl &&
+      !(existing.imgurFallbackUrls || []).includes(item.requestUrl);
+    if (a && b && a.ext === b.ext && item.requestUrl !== existing.requestUrl) {
+      const observed = uniqueThumbUrls([existing.requestUrl,item.requestUrl].concat(existing.imgurFallbackUrls || [],item.imgurFallbackUrls || []));
+      existing.imgurFallbackUrls = observed.filter(u => u !== existing.requestUrl).slice(0,3);
+      item.imgurFallbackUrls = observed.filter(u => u !== item.requestUrl).slice(0,3);
+    } else if (a && b) {
+      item.imgurFallbackUrls = existing.imgurFallbackUrls;
+    }
+    if (newImgurAlias && existing.__failed && !existing.card) {
+      // A newly observed concrete URL is independent evidence, not a blind retry.
+      existing.__failed = false;
+      existing.__thumbLoaded = false;
+      existing.__thumbLoading = false;
+      existing.__thumbCtx = null;
+      existing.__thumbToken = 0;
+      existing.__thumbRetry = 0;
+      existing.__thumbImg = null;
+      state.items.errorCount = Math.max(0,state.items.errorCount-1);
+      invalidateVisibilityStats('imgur-alias-recovery');
+      existing.dupCount = (existing.dupCount || 1)+1;
+      mergeDupCluster(existing,item);
+      registerSeen(key);
+      return existing;
+    }
+    if (!keepOriginal && (preferOriginal || (!keepExplicit && (preferExplicit || betterByScore || betterByQuality)))) {
       const prevAllHidden = !!existing.__allHidden;
       const prevAutoHidden = !!existing.__autoHidden;
       const prevAutoHiddenReason = existing.__autoHiddenReason || '';
@@ -2740,6 +2899,10 @@ function adoptItem(item) {
     const prevAutoHiddenReason = existing.__autoHiddenReason || '';
     let embedTypeChanged = false;
     let previewTextChanged = false;
+    const mergedPreviews = uniqueThumbUrls((existing.previewUrls || []).concat(item.previewUrls || [])).slice(0,4);
+    if (!existing.poster && item.poster) { existing.poster = item.poster; previewTextChanged = true; }
+    if (!existing.__capturedPoster && item.__capturedPoster) { existing.__capturedPoster = item.__capturedPoster; previewTextChanged = true; }
+    if (mergedPreviews.join('\n') !== (existing.previewUrls || []).join('\n')) { existing.previewUrls = mergedPreviews; previewTextChanged = true; }
     if (!existing.embedType && item.embedType) {
       existing.embedType = item.embedType;
       embedTypeChanged = true;
@@ -2771,12 +2934,18 @@ function adoptItem(item) {
   if (item.__isNoise) state.items.noiseCount += 1;
   item.index = state.items.list.length;
   state.groupBest.set(key, item);
+  if (item.kind === 'img') for (const u of item.renditionAliases || []) {
+    const alias=canonicalMediaKey(u,'img');
+    if (alias && !state.groupBest.has(alias)) state.groupBest.set(alias,item);
+  }
   state.items.list.push(item);
+  state.items.orderDirty=true;
   state.items.byId.set(item.id, item);
   return item;
 }
 
 function addItems(list) {
+  reconcileLiveImageVisibility();
   if (!list || !list.length) return;
   let changed = false;
   list.forEach(function(item) {
@@ -2837,12 +3006,7 @@ function normalizeCrawlCandidateUrl(url, base) {
 function normalizeCrawlUrl(url) {
   const normalized = normalizeCrawlCandidateUrl(url, location.href);
   if (!normalized) return '';
-  let s = String(normalized).split('#')[0].trim();
-  if (!s) return '';
-  if (s.endsWith('/') && !/^https?:\/\/[^/]+\/$/.test(s)) {
-    s = s.replace(/\/+$/, '');
-  }
-  return s;
+  return String(normalized).split('#')[0].trim();
 }
 
 function crawlQueueLength() {
@@ -2874,23 +3038,54 @@ function popCrawlQueue() {
   if (head >= q.length) return '';
   state.crawl.queueHead = head + 1;
   const next = q[head] || '';
+  state.crawl.queuePriority.delete(next);
   compactCrawlQueue();
   return next;
 }
 
-function enqueueCrawlLinks(urls) {
+function enqueueCrawlLinks(urls, priority, parent) {
   if (!urls || !urls.length) return;
   const maxQ = state.cfg.crawlMaxQueue || 200;
-  urls.forEach(function(raw) {
-    if (crawlQueueLength() >= maxQ) return;
+  const initial = normalizeCrawlUrl(location.href);
+  const promoted = [];
+  const q = state.crawl.queue;
+  const head = state.crawl.queueHead || 0;
+  const seen = new Set();
+  let ordinal=0;
+  for (const raw of urls) {
+    const orderIndex=ordinal++;
     const clean = normalizeCrawlUrl(raw);
-    if (!clean) return;
-    if (state.crawl.visited.has(clean)) return;
-    if (state.crawl.queueDedup.has(clean)) return;
+    if (!clean || clean === initial || seen.has(clean)) continue;
+    seen.add(clean);
+    if (state.crawl.visited.has(clean)) continue;
+    if (state.crawl.queueDedup.has(clean)) {
+      if (priority) {
+        const pos = q.indexOf(clean, head);
+        if (pos >= head) {
+          promoted.push(q.splice(pos, 1)[0]);
+          state.crawl.queuePriority.add(clean);
+        }
+      }
+      continue;
+    }
+    if (crawlQueueLength() + promoted.length >= maxQ) {
+      if (!priority) break;
+      let evict = q.length - 1;
+      while (evict >= head && state.crawl.queuePriority.has(q[evict])) evict--;
+      if (evict < head) continue; // never evict a pending priority link
+      const removed = q.splice(evict, 1)[0];
+      if (!state.crawl.visited.has(removed)) { state.crawl.queueDedup.delete(removed); state.crawl.pageOrder.delete(removed); }
+      perfCount('crawl.evict.normal');
+    }
     state.crawl.queueDedup.add(clean);
-    state.crawl.queue.push(clean);
+    recordCrawlPageOrder(clean,parent,priority,orderIndex);
+    if (priority) {
+      promoted.push(clean);
+      state.crawl.queuePriority.add(clean);
+    } else q.push(clean);
     perfCount('crawl.enqueue');
-  });
+  }
+  if (promoted.length) q.splice(head, 0, ...promoted);
   perfGauge('crawl.queue', crawlQueueLength());
 }
 
@@ -2899,12 +3094,19 @@ function collectCrawlLinksFromDocument(doc, baseUrl, details) {
   perfCount('crawl.linkScan.document');
   const cfg = state.cfg;
   const out = [];
+  const body = [];
   const nexts = [];
-  const base = baseUrl || location.href;
+  const bodyKeys = new Set();
+  const page = baseUrl || location.href;
+  const base = getMediaDocumentBase(doc, page);
+  const currentKey = normalizeCrawlUrl(page);
+  const initialKey = normalizeCrawlUrl(location.href);
   const preferSameOrigin = !!cfg.crawlPreferSameOriginOnly;
   function allowUrl(u) {
     if (!/^https?:$/.test(u.protocol)) return false;
-    if (isImageUrl(u.toString()) || isVideoUrl(u.toString())) return false;
+    if (isImageResourceLink(u.href) || isDirectImageUrl(u.href) || isVideoUrl(u.href)) return false;
+    const key = normalizeCrawlUrl(u.href);
+    if (!key || key === currentKey || key === initialKey) return false;
     if (preferSameOrigin) return isSameOriginUrl(u.toString(), base);
     return sameSite(u.toString());
   }
@@ -2926,9 +3128,13 @@ function collectCrawlLinksFromDocument(doc, baseUrl, details) {
   links.forEach(function(a) {
     const href = a.getAttribute('href');
     if (!href || href.startsWith('#')) return;
-    pushCandidate(out, href);
+    const inBody = inBodyScope(a) && !inAvoidScope(a);
+    const list = inBody ? body : out;
+    const before = list.length;
+    pushCandidate(list, href);
+    if (inBody && list.length > before && isSameOriginUrl(list[list.length - 1], base)) bodyKeys.add(normalizeCrawlUrl(list[list.length - 1]));
   });
-  const merged = nexts.concat(out);
+  const merged = nexts.concat(body, out);
   const uniq = [];
   const seen = new Set();
   merged.forEach(function(raw) {
@@ -2939,7 +3145,7 @@ function collectCrawlLinksFromDocument(doc, baseUrl, details) {
   });
   perfCount('crawl.linkScan.links', uniq.length);
   perfEnd('crawl.linkScan', linkScanStartedAt);
-  if (details) details.links = uniq.slice();
+  if (details) { details.links = uniq.slice(); details.bodySameOriginCount = bodyKeys.size; }
   return uniq;
 }
 
@@ -2964,7 +3170,7 @@ function collectCrawlBootstrap(doc, baseUrl) {
   return {
     links: links.slice(),
     priorityLinks: (details.priorityLinks || []).slice(),
-    bodySameOriginCount: countBodySameOriginLinks(sourceDoc, sourceBase),
+    bodySameOriginCount: details.bodySameOriginCount || 0,
     pagerPlan: buildPagerPlan(sourceBase, sourceDoc)
   };
 }
@@ -2999,19 +3205,28 @@ function buildPagerPlan(baseUrl, doc) {
     if (!param) param = page ? 'page' : 'p';
     if (n > max) max = n;
   });
-  if (max < 2) {
-    const pagerTexts = Array.from(doc.querySelectorAll(
-      '.page-current, .article-inner-pager, .pager, .pagination, [class*=\"pager\"], [class*=\"paging\"], [id*=\"pager\"]'
-    ))
-      .map(function(el) { return String(el.textContent || '').replace(/\s+/g, ' ').trim(); });
-    pagerTexts.forEach(function(text) {
-      const m = /(\d{1,3})\s*\/\s*(\d{1,3})/.exec(text);
-      if (!m) return;
-      const total = parseInt(m[2] || '0', 10) || 0;
-      if (total > max) max = total;
-    });
-    if (max > 1 && !param) param = 'p';
+  const numericMax = max;
+  const pagerNodes = doc.querySelectorAll('.page-current, .article-inner-pager, .pager, .pagination, [class*="pager"], [class*="paging"], [id*="pager"]');
+  for (const el of pagerNodes) {
+    if (numericMax >= 2 && !el.matches('.page-current, .article-inner-pager')) {
+      const linkedHere = Array.from(el.querySelectorAll('a[href]')).some(function(a) {
+        try {
+          const u = new URL(a.getAttribute('href'), baseUrl);
+          return u.origin + u.pathname === baseKey && (u.searchParams.has('p') || u.searchParams.has('page'));
+        } catch (e) { return false; }
+      });
+      if (!linkedHere) continue;
+    }
+    const marker = el.matches('.page-current') ? el : el.querySelector('.page-current');
+    const text = String(marker ? marker.textContent : Array.from(el.childNodes).map(function(node) {
+      return node.nodeType === 1 && node.matches('a[href],button') ? ' ' : node.textContent;
+    }).join(' ') || '').replace(/\s+/g, ' ').trim();
+    const m = /(?:^|[^\d])(\d{1,3})\s*\/\s*(\d{1,3})(?!\d)/.exec(text);
+    if (!m) continue;
+    const current = Number(m[1]), total = Number(m[2]);
+    if (current >= 1 && current <= total && total > max) max = total;
   }
+  if (max > 1 && !param) param = 'p';
   if (max > cap) max = cap;
   if (max < 2) return null;
   if (!param) param = 'p';
@@ -3030,7 +3245,7 @@ function isMediaDocument(doc) {
     const body = d.body;
     if (!body) return false;
     const kids = Array.from(body.children).filter(function(el) {
-      return el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE';
+      return el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE' && el !== state.ui.root;
     });
     if (kids.length === 1) {
       const tag = kids[0].tagName;
@@ -3038,23 +3253,6 @@ function isMediaDocument(doc) {
     }
   } catch (e) {}
   return false;
-}
-
-function countBodySameOriginLinks(doc, baseUrl) {
-  let count = 0;
-  const links = Array.from(doc.querySelectorAll('a[href]'));
-  links.forEach(function(a) {
-    if (!inBodyScope(a)) return;
-    const href = a.getAttribute('href');
-    if (!href || href.startsWith('#')) return;
-    let u;
-    try { u = new URL(href, baseUrl || location.href); } catch (e) { return; }
-    if (!/^https?:$/.test(u.protocol)) return;
-    if (!isSameOriginUrl(u.toString(), baseUrl || location.href)) return;
-    if (isImageUrl(u.toString()) || isVideoUrl(u.toString())) return;
-    count += 1;
-  });
-  return count;
 }
 
 function countImageCandidates() {
@@ -3141,6 +3339,162 @@ async function readResponseTextLimited(res, maxChars, maxBytes) {
   return text.slice(0, limit);
 }
 
+// Detached documents have no computed CSS. Apply only explicit complementary
+// media rules to paired sibling IMG variants. Do not guess from viewport names
+// alone, mount foreign DOM, load scripts, or bypass browser blockers.
+const RESPONSIVE_PAIRS=[['pc','sp'],['pc-only','sp-only'],['desktop','mobile'],['desktop-only','mobile-only']];
+const RESPONSIVE_CLASSES=new Set(RESPONSIVE_PAIRS.flat().map(n=>'.'+n));
+const RESPONSIVE_CSS_MAX=8,RESPONSIVE_CSS_BYTES=524288,RESPONSIVE_CSS_TOTAL=1572864;
+function responsiveSiblingPairs(doc,base) {
+  const out=[];
+  for(const names of RESPONSIVE_PAIRS){
+    const [a,b]=names;
+    const candidates=doc.querySelectorAll('img.'+a);
+    for(const first of candidates){
+      if(out.length>=256)return out;
+      if(first.classList.contains(b) || !first.parentElement)continue;
+      const siblings=Array.from(first.parentElement.children).filter(e=>e.tagName==='IMG');
+      const peers=siblings.filter(e=>e.classList.contains(b)&&!e.classList.contains(a));
+      if(peers.length!==1 || siblings.filter(e=>e.classList.contains(a)).length!==1)continue;
+      const second=peers[0];
+      // Require matching rendition filenames or matching nonempty alt text
+      // plus a shared two-image slot. Class names alone are not identity.
+      const file=e=>{
+        try{
+          const u=new URL(e.getAttribute('data-original')||e.getAttribute('data-src')||e.getAttribute('src')||'',base);
+          if(!/^https?:$/.test(u.protocol))return '';
+          return u.origin+u.pathname.replace(/(?:^|\/)(?:sp|pc|mobile|desktop)[_-](?=[^/]+$)/i,'/').replace(/[_-](?:sp|pc|mobile|desktop)(?=\.[a-z0-9]+$)/i,'')+u.search;
+        }catch(e){return '';}
+      };
+      const x=file(first),y=file(second);
+      const alt=(first.getAttribute('alt')||'').trim();
+      if(!(x && x===y) && !(siblings.length===2 && alt && alt===(second.getAttribute('alt')||'').trim()))continue;
+      out.push({names,first,second});
+    }
+  }
+  return out;
+}
+
+function readResponsiveRules(rules,out,media) {
+  for(const rule of rules){
+    // Only CSSMediaRule and simple class selectors with important display
+    // declarations are supported. Unknown nested contexts are not evaluated.
+    if(rule.type===4 && rule.cssRules){
+      const q=rule.conditionText||rule.media.mediaText;
+      if(media.length<3)readResponsiveRules(rule.cssRules,out,media.concat(q));
+    }else if(rule.type===1 && rule.style){
+      const sel=(rule.selectorText||'').trim();
+      if(!RESPONSIVE_CLASSES.has(sel))continue;
+      const display=rule.style.getPropertyValue('display').trim().toLowerCase();
+      if(!display)continue;
+      out.push({name:sel.slice(1),display,important:rule.style.getPropertyPriority('display')==='important',media});
+    }
+  }
+}
+function parseResponsiveCss(text) {
+  if(!text || text.length>=RESPONSIVE_CSS_BYTES || typeof CSSStyleSheet!=='function')return [];
+  try{
+    const sheet=new CSSStyleSheet();
+    sheet.replaceSync(text);
+    const out=[];readResponsiveRules(sheet.cssRules,out,[]);return out;
+  }catch(e){return [];}
+}
+async function responsiveRulesForUrl(url,signal) {
+  const map=state.crawl.responsiveCss;
+  if(map.has(url))return map.get(url);
+  if(map.size>=RESPONSIVE_CSS_MAX)return [];
+  const work=(async()=>{
+    // Prefer an already-loaded stylesheet; otherwise use one bounded,
+    // same-origin CSS read. Cache results including failures for this run.
+    for(const sheet of document.styleSheets){
+      if(sheet.href!==url || sheet.disabled)continue;
+      try{const out=[];readResponsiveRules(sheet.cssRules,out,[]);return out;}catch(e){}
+    }
+    try{
+      if(state.crawl.responsiveCssBytes>=RESPONSIVE_CSS_TOTAL)return [];
+      const res=await fetch(url,{signal,credentials:'same-origin',redirect:'error'});
+      if(!res.ok || !isSameOriginUrl(res.url||url) || !/^text\/css(?:;|$)/i.test(res.headers.get('content-type')||''))return [];
+      const len=Number(res.headers.get('content-length')||0);
+      if(len>RESPONSIVE_CSS_BYTES || len>RESPONSIVE_CSS_TOTAL-state.crawl.responsiveCssBytes || !canStreamResponse(res)){
+        try{await res.body?.cancel();}catch(e){}
+        return [];
+      }
+      const reader=res.body.getReader(),decoder=new TextDecoder();
+      let text='',bytes=0;
+      try{
+        for(;;){
+          const {done,value}=await reader.read();if(done)break;
+          bytes+=value.byteLength;
+          state.crawl.responsiveCssBytes+=value.byteLength;
+          if(bytes>=RESPONSIVE_CSS_BYTES || state.crawl.responsiveCssBytes>=RESPONSIVE_CSS_TOTAL){await reader.cancel();return [];}
+          text+=decoder.decode(value,{stream:true});
+        }
+        text+=decoder.decode();
+      }finally{try{reader.releaseLock();}catch(e){}}
+      if(signal && signal.aborted)return [];
+      return parseResponsiveCss(text);
+    }catch(e){return [];}
+  })();
+  map.set(url,work);
+  return work;
+}
+function responsiveHiddenSide(pair,rules,cache=new Map()) {
+  const side=name=>{
+    if(cache.has(name))return cache.get(name);
+    const rs=rules.filter(r=>r.name===name);
+    const hidden=rs.filter(r=>r.important && r.display==='none' && r.media.length);
+    const matches=r=>r.media.every(q=>{try{return matchMedia(q).matches;}catch(e){return false;}});
+    const active=rs.filter(matches);
+    // Require an explicit responsive hide rule for BOTH sides, and no
+    // active conflicting visible declaration. Never infer an absent rule.
+    const result={declared:hidden.length>0,hidden:hidden.some(matches),
+      conflict:active.some(r=>r.display!=='none'),unconditional:rs.some(r=>r.display==='none'&&!r.media.length)};
+    cache.set(name,result);
+    return result;
+  };
+  const a=side(pair.names[0]),b=side(pair.names[1]);
+  if(!a.declared||!b.declared||a.conflict||b.conflict||a.unconditional||b.unconditional||a.hidden===b.hidden)return null;
+  return a.hidden?pair.first:pair.second;
+}
+async function getDetachedResponsiveHidden(doc,page,signal) {
+  const pairs=responsiveSiblingPairs(doc,getMediaDocumentBase(doc,page));
+  if(!pairs.length)return null;
+  const rules=[];
+  for(const style of Array.from(doc.querySelectorAll('style')).slice(0,8)){
+    if(style.media && !matchMedia(style.media).matches)continue;
+    rules.push(...parseResponsiveCss(style.textContent));
+  }
+  const base=getMediaDocumentBase(doc,page);
+  // Prioritize conventional shared/responsive stylesheets, never unrelated
+  // font or third-party files; no new crawl pages or unbounded CSS discovery.
+  const urls=[];
+  for(const link of doc.querySelectorAll('link[rel~="stylesheet"][href]')){
+    if(link.hasAttribute('disabled') || (link.media && !matchMedia(link.media).matches))continue;
+    const url=resolveMediaReference(link.getAttribute('href'),base);
+    if(!url || !isSameOriginUrl(url))continue;
+    try{
+      if(!/(?:^|\/)(?:common|style|responsive|layout|main|index|base)(?:[-_.][^/]*)?\.css$/i.test(new URL(url).pathname))continue;
+    }catch(e){continue;}
+    if(!urls.includes(url))urls.push(url);
+  }
+  // At most four CSS resources per qualifying document, eight per run.
+  // Existing crawl cancellation and timeout also cover these reads.
+  const sideCache=new Map();
+  for(const url of urls.slice(0,4)){
+    if(signal && signal.aborted)return null;
+    rules.push(...await responsiveRulesForUrl(url,signal));
+    sideCache.clear(); // rules/viewport may change across the await
+    if(pairs.every(p=>responsiveHiddenSide(p,rules,sideCache)))break;
+  }
+  const hidden=new WeakSet();let count=0;
+  for(const pair of pairs){
+    const el=responsiveHiddenSide(pair,rules,sideCache);
+    if(el){hidden.add(el);count++;}
+  }
+  if(count){perfCount('crawl.responsive.hidden',count);state.log.push('crawl','responsive hidden='+count+' '+page);}
+  return count?hidden:null;
+}
+
 async function crawlFetch(url) {
   if (state.abort.aborted || state.crawl.stop) return;
   if (state.cfg.crawlPreferSameOriginOnly && !isSameOriginUrl(url)) return;
@@ -3160,6 +3514,23 @@ async function crawlFetch(url) {
     const res = await fetch(url, { signal: controller.signal, credentials: 'same-origin' });
     if (crawlStopped()) return;
     if (!res.ok) return;
+    const responseUrl = res.url || url;
+    if (state.cfg.crawlPreferSameOriginOnly ? !isSameOriginUrl(responseUrl) : !sameSite(responseUrl)) {
+      state.log.push('crawl', 'skip redirected out of scope ' + url);
+      return;
+    }
+    if (state.crawl.mode === 'pager' && state.crawl.pagerBase) {
+      const response = new URL(responseUrl);
+      if (response.origin + response.pathname !== state.crawl.pagerBase) {
+        state.log.push('crawl', 'skip redirect outside article ' + url);
+        return;
+      }
+    }
+    if (responseUrl !== url) {
+      const alias=normalizeCrawlUrl(responseUrl);
+      state.crawl.queueDedup.add(alias);
+      if (!state.crawl.pageOrder.has(alias)) state.crawl.pageOrder.set(alias,pageOrderRank(url));
+    }
     const contentType = (res.headers && typeof res.headers.get === 'function')
       ? (res.headers.get('content-type') || '')
       : '';
@@ -3178,7 +3549,9 @@ async function crawlFetch(url) {
     const html = await readResponseTextLimited(res, state.cfg.maxHtmlChars, maxBytes);
     if (crawlStopped()) return;
     const doc = new DOMParser().parseFromString(html, 'text/html');
-    const items = extractFromDocument(doc, 'crawl', url);
+    const responsiveHidden = await getDetachedResponsiveHidden(doc,responseUrl,controller.signal);
+    if (crawlStopped()) return;
+    const items = extractFromDocument(doc, 'crawl', responseUrl, responsiveHidden);
     if (crawlStopped()) return;
     if (!items.length) {
       state.log.push('crawl', '0 items (strict body-only) ' + url);
@@ -3186,15 +3559,18 @@ async function crawlFetch(url) {
     addItems(items);
     if (crawlStopped()) return;
     if (state.crawl.mode === 'pager') {
-      const plan = buildPagerPlan(url, doc);
-      if (plan && plan.urls && plan.urls.length) {
-        enqueueCrawlLinks(plan.urls);
-        state.crawl.pagerBase = plan.baseKey;
-        state.crawl.pagerParam = plan.param;
+      const plan = buildPagerPlan(responseUrl, doc);
+      if (plan && plan.baseKey === state.crawl.pagerBase && plan.urls && plan.urls.length) {
+        enqueueCrawlLinks(plan.urls, true, responseUrl);
+        state.crawl.limit = Math.max(state.crawl.limit,
+          Math.min(state.cfg.crawlArticleMaxPages || 30, state.crawl.visited.size + crawlQueueLength() + 2));
       }
     } else {
-      const more = collectCrawlLinksFromDocument(doc, url);
-      enqueueCrawlLinks(more.slice(0, state.cfg.crawlMaxNewLinksPerDoc));
+      const details = {};
+      const more = collectCrawlLinksFromDocument(doc, responseUrl, details).slice(0, state.cfg.crawlMaxNewLinksPerDoc);
+      const priorityKeys = new Set((details.priorityLinks || []).map(normalizeCrawlUrl));
+      enqueueCrawlLinks(more.filter(function(u) { return priorityKeys.has(normalizeCrawlUrl(u)); }), true, responseUrl);
+      enqueueCrawlLinks(more.filter(function(u) { return !priorityKeys.has(normalizeCrawlUrl(u)); }), false, responseUrl);
     }
     updateProgress('crawl', token);
   } catch (e) {
@@ -3234,6 +3610,8 @@ async function startCrawl() {
   state.crawl.queue = [];
   state.crawl.queueHead = 0;
   state.crawl.queueDedup.clear();
+  state.crawl.queuePriority.clear();
+  state.crawl.pageOrder.clear();
   state.crawl.mode = '';
   state.crawl.pagerBase = '';
   state.crawl.pagerParam = '';
@@ -3246,9 +3624,13 @@ async function startCrawl() {
     state.crawl.mode = 'pager';
     state.crawl.pagerBase = plan.baseKey;
     state.crawl.pagerParam = plan.param;
-    enqueueCrawlLinks(plan.urls);
+    enqueueCrawlLinks(plan.urls, true);
   } else {
-    enqueueCrawlLinks(bootstrap ? bootstrap.links : collectCrawlLinks());
+    const details = {};
+    const links = bootstrap ? bootstrap.links : collectCrawlLinks(document, location.href, details);
+    const priority = bootstrap ? bootstrap.priorityLinks : details.priorityLinks;
+    enqueueCrawlLinks(priority || [], true);
+    enqueueCrawlLinks(links);
   }
   state.crawl.limit = state.cfg.crawlBaseLimit + (state.crawl.allowUserBoost ? state.cfg.crawlBoost : 0);
   if (state.crawl.mode === 'pager') {
@@ -3282,6 +3664,7 @@ async function pumpCrawl() {
         state.crawl.limit = nextLimit;
         state.crawl.boostedAuto = true;
         state.log.push('crawl', 'auto-boost limit=' + state.crawl.limit + ' media=' + mediaCount);
+        if (!state.crawl.inFlight && crawlQueueLength()) return pumpCrawl();
       }
     }
   }
@@ -3297,9 +3680,12 @@ async function pumpCrawl() {
 function boostCrawl(reason) {
   if (state.crawl.allowUserBoost) return;
   state.crawl.allowUserBoost = true;
-  state.crawl.limit = state.cfg.crawlBaseLimit + state.cfg.crawlBoost;
+  state.crawl.limit = Math.max(state.crawl.limit, state.cfg.crawlBaseLimit + state.cfg.crawlBoost);
   state.log.push('boost', reason || 'user');
-  if (state.crawl.started) pumpCrawl();
+  if (state.crawl.started && !state.crawl.stop && !state.abort.aborted && crawlQueueLength() && state.crawl.visited.size < state.crawl.limit) {
+    state.crawl.done = false;
+    pumpCrawl();
+  }
 }
 
 /* [10] ui-shell */
@@ -3373,10 +3759,15 @@ function createShell() {
     #__fmp_root__ :where(.fmp-css-scope).wrap.dm-class-styles .dm-copy-close { margin-top: 10px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--fmp-border, #555); background: var(--fmp-accent, #fff); color: var(--fmp-text-on-accent, #111); }
     :where(.fmp-css-scope).wrap.dm-class-styles .dm-boot-badge { position: fixed; top: 12px; right: 12px; z-index: 2147483647; background: var(--fmp-control-bg, #111); color: var(--fmp-text, #eee); border: 1px solid var(--fmp-border-soft, #444); border-radius: 10px; padding: 6px 8px; font-size: 11px; }
     :where(.fmp-css-scope) .bg { position: absolute; inset: 0; background: var(--fmp-bg, #000); pointer-events: none; z-index: 0; }
-    :where(.fmp-css-scope) .panel { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px; padding: calc(env(safe-area-inset-top) + 10px) 10px calc(env(safe-area-inset-bottom) + 10px); background: var(--fmp-panel-bg, rgba(0, 0, 0, 0.92)); pointer-events: auto; z-index: 1; }
-    :where(.fmp-css-scope) .header { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
-    :where(.fmp-css-scope) .title { font-size: calc(16px * var(--ui-scale)); font-weight: 700; letter-spacing: 0.02em; }
-    :where(.fmp-css-scope) .btns { display: flex; gap: 6px; }
+    :where(.fmp-css-scope) .panel { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px; padding: calc(env(safe-area-inset-top) + 10px) calc(env(safe-area-inset-right) + 10px) calc(env(safe-area-inset-bottom) + 10px) calc(env(safe-area-inset-left) + 10px); background: var(--fmp-panel-bg, rgba(0, 0, 0, 0.92)); pointer-events: auto; z-index: 1; }
+    :where(.fmp-css-scope) .header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; justify-content: space-between; }
+    :where(.fmp-css-scope) .title { font-size: calc(14px * var(--ui-scale)); font-weight: 700; letter-spacing: 0.02em; min-width: 0; overflow-wrap: anywhere; }
+    :where(.fmp-css-scope) .btns { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+    @media (max-width: 420px) {
+      :where(.fmp-css-scope) .header { display: grid; grid-template-columns: minmax(0,1fr); }
+      :where(.fmp-css-scope) .btns { width: 100%; }
+      :where(.fmp-css-scope) .btns .btn { flex: 1 1 auto; white-space: nowrap; }
+    }
     :where(.fmp-css-scope) .btn,
     #__fmp_root__ :where(.fmp-css-scope) .btn { min-width: 44px; min-height: 44px; font-size: calc(12px * var(--ui-scale)); padding: calc(6px * var(--ui-scale)) calc(10px * var(--ui-scale)); border: 1px solid var(--fmp-border, #555); background: var(--fmp-control-bg, #111); color: var(--fmp-text, #eee); border-radius: 999px; }
     :where(.fmp-css-scope) .btn.danger { background: var(--fmp-accent, #fff); color: var(--fmp-text-on-accent, #111); border-color: var(--fmp-accent, #fff); }
@@ -3388,9 +3779,9 @@ function createShell() {
     :where(.fmp-css-scope) .chip-page { font-size: calc(10px * var(--ui-scale)); padding: calc(3px * var(--ui-scale)) calc(6px * var(--ui-scale)); border-radius: 999px; border: 1px solid var(--fmp-border-soft, #444); background: var(--fmp-control-bg, #111); color: var(--fmp-text-muted, #bbb); }
     :where(.fmp-css-scope) .info { font-size: calc(12px * var(--ui-scale)); opacity: 0.75; color: var(--fmp-text-subtle, #cfcfcf); }
     :where(.fmp-css-scope) .progress { font-size: calc(11px * var(--ui-scale)); opacity: 0.65; color: var(--fmp-text-progress, #b0b0b0); }
-    :where(.fmp-css-scope) .grid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; padding-bottom: 10px; align-content: start; grid-auto-rows: auto; }
+    :where(.fmp-css-scope) .grid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(140px, 100%), 1fr)); gap: 10px; padding-bottom: 10px; align-content: start; grid-auto-rows: auto; }
     :where(.fmp-css-scope) .card,
-    #__fmp_root__ :where(.fmp-css-scope) .card { background: var(--fmp-card-bg, #0b0b0b); border-radius: 14px; border: 1px solid var(--fmp-border-strong, #333); overflow: hidden; display: flex; flex-direction: column; position: relative; contain: layout paint; }
+    #__fmp_root__ :where(.fmp-css-scope) .card { background: var(--fmp-card-bg, #0b0b0b); border-radius: 16px; border: 1px solid var(--fmp-border-strong, #333); overflow: hidden; display: flex; flex-direction: column; position: relative; contain: layout paint; }
     :where(.fmp-css-scope) .card.is-hidden { display: none; }
     :where(.fmp-css-scope) .card.is-error { opacity: 0.7; }
     :where(.fmp-css-scope) .card.is-current { outline: 2px solid var(--fmp-accent, #fff); outline-offset: -2px; box-shadow: 0 0 0 2px var(--fmp-line, rgba(255,255,255,0.2)); }
@@ -3478,6 +3869,33 @@ function createShell() {
       color: #fff;
     }
     :where(.fmp-css-scope) .card[data-kind="embed"][data-etype="OTHER"] .badge { background: var(--fmp-badge-bg, rgba(255,255,255,0.78)); color: var(--fmp-text-on-accent, #111); }
+    :where(.fmp-css-scope) .card[data-media-type] { --media-accent: #60a5fa; --media-ink: #101827; --media-bg: #15263c; }
+    :where(.fmp-css-scope) .card[data-media-type="YT"] { --media-accent:#ff4054; --media-ink:#240409; --media-bg:#351218; }
+    :where(.fmp-css-scope) .card[data-media-type="IMGUR"] { --media-accent:#36d98d; --media-ink:#052718; --media-bg:#103526; }
+    :where(.fmp-css-scope) .card[data-media-type="X"] { --media-accent:#78bfff; --media-ink:#102033; --media-bg:#142438; }
+    :where(.fmp-css-scope) .card[data-media-type="TT"] { --media-accent:#65e3df; --media-ink:#102626; --media-bg:#29202e; }
+    :where(.fmp-css-scope) .card[data-media-type="INSTA"] { --media-accent:#f49acb; --media-ink:#321326; --media-bg:#36192d; }
+    :where(.fmp-css-scope) .card[data-media-type="VIMEO"] { --media-accent:#65c7ff; --media-ink:#08273a; --media-bg:#123044; }
+    :where(.fmp-css-scope) .card[data-media-type="DM"] { --media-accent:#a5aaff; --media-ink:#15193f; --media-bg:#22264b; }
+    :where(.fmp-css-scope) .card[data-media-type="TWITCH"] { --media-accent:#b692ff; --media-ink:#261143; --media-bg:#301950; }
+    :where(.fmp-css-scope) .card[data-media-type="NICO"] { --media-accent:#f4cf65; --media-ink:#302300; --media-bg:#382e17; }
+    :where(.fmp-css-scope) .card[data-media-type="BILI"] { --media-accent:#ff87ad; --media-ink:#351023; --media-bg:#3b1d2b; }
+    :where(.fmp-css-scope) .card[data-media-type="FB"] { --media-accent:#6995ff; --media-ink:#101c39; --media-bg:#192c51; }
+    :where(.fmp-css-scope) .card[data-media-type="OTHER"] { --media-accent:#d2d5dc; --media-ink:#202126; --media-bg:#272a31; }
+    :where(.fmp-css-scope) .card[data-media-type][data-kind]::after {
+      content:''; position:absolute; inset:0; pointer-events:none; z-index:6;
+      border:2px solid var(--media-accent) !important; border-image:none !important; border-radius:inherit;
+    }
+    :where(.fmp-css-scope) .card[data-media-type][data-kind] .badge {
+      background:var(--media-accent) !important; color:var(--media-ink) !important; border:0;
+      width:auto; max-width:calc(100% - 12px); height:auto; min-height:20px;
+      padding:4px 7px; border-radius:8px; font-size:11px; white-space:nowrap; overflow:hidden;
+    }
+    :where(.fmp-css-scope) .card[data-media-type][data-kind] .thumb .ph {
+      background:var(--media-bg); color:#f5f5f5; border-radius:12px;
+      box-sizing:border-box; overflow:hidden;
+    }
+    :where(.fmp-css-scope) .card[data-media-type] .dm-preview-row { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
     :where(.fmp-css-scope) .ph-load { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--fmp-overlay-soft, rgba(0,0,0,0.35)); font-size: 11px; color: var(--fmp-text-muted, #bbb); pointer-events: none; transition: opacity 140ms ease; will-change: opacity; }
     :where(.fmp-css-scope) .badge {
       position: absolute;
@@ -3550,9 +3968,15 @@ function createShell() {
     :where(.fmp-css-scope) .lb[data-kind="embed"][data-etype="OTHER"] .lb-frame { border-color: var(--fmp-line-soft, rgba(255,255,255,0.16)); }
     :where(.fmp-css-scope) .lb-frame img, :where(.fmp-css-scope) .lb-frame video, :where(.fmp-css-scope) .lb-frame canvas { max-width: 92vw; max-height: 78vh; object-fit: contain; display: block; }
     :where(.fmp-css-scope) .lb-frame img { transition: opacity 120ms; transform: translateZ(0); -webkit-transform: translateZ(0); backface-visibility: hidden; -webkit-backface-visibility: hidden; will-change: opacity, transform; }
-    :where(.fmp-css-scope) .lb-controls { position: fixed; bottom: calc(env(safe-area-inset-bottom) + 16px); left: 0; right: 0; display: flex; justify-content: center; gap: 10px; }
+    :where(.fmp-css-scope) .lb-controls { position: fixed; bottom: calc(env(safe-area-inset-bottom) + 12px); left: 0; right: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; padding-inline: calc(env(safe-area-inset-left) + 8px) calc(env(safe-area-inset-right) + 8px); }
+    @media (max-height: 500px) {
+      :where(.fmp-css-scope) .lb { padding-top: calc(env(safe-area-inset-top) + 44px); padding-bottom: calc(env(safe-area-inset-bottom) + 72px); }
+      :where(.fmp-css-scope) .lb-frame,
+      :where(.fmp-css-scope) .lb-frame :is(img,video,canvas,iframe) { max-height: calc(100vh - 128px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
+      :where(.fmp-css-scope) .lb-info-panel { max-height: 40vh; overflow: auto; }
+    }
     :where(.fmp-css-scope).wrap.is-iphone .lb-controls,
-    :where(.fmp-css-scope).wrap.is-ipad .lb-controls { justify-content: flex-start; padding-left: calc(env(safe-area-inset-left) + 14px); padding-right: 0; }
+    :where(.fmp-css-scope).wrap.is-ipad .lb-controls { justify-content: flex-start; padding-left: calc(env(safe-area-inset-left) + 10px); padding-right: calc(env(safe-area-inset-right) + 10px); }
     :where(.fmp-css-scope) .lb-btn,
     #__fmp_root__ :where(.fmp-css-scope) .lb-btn { min-width: 44px; min-height: 44px; background: var(--fmp-accent, #fff); color: var(--fmp-text-on-accent, #111); border-radius: 999px; border: 0; padding: calc(8px * var(--lb-scale)) calc(14px * var(--lb-scale)); font-size: calc(12px * var(--lb-scale)); }
     :where(.fmp-css-scope) :is(.btn,.chip,.lb-btn):focus-visible { outline: 2px solid var(--fmp-accent, #fff); outline-offset: 2px; }
@@ -3578,6 +4002,58 @@ function createShell() {
       :where(.fmp-css-scope) .grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
       :where(.fmp-css-scope) .thumb img, :where(.fmp-css-scope) .thumb video, :where(.fmp-css-scope) .thumb .ph { height: 180px; }
     }
+    :where(.fmp-css-scope) .grid[data-density="compact"] { grid-template-columns: repeat(auto-fill, minmax(min(104px, 100%), 1fr)); gap: 6px; }
+    :where(.fmp-css-scope) .grid[data-density="large"] { grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); }
+    :where(.fmp-css-scope) .grid[data-density="compact"] .thumb :is(img,video,.ph) { height: 104px !important; }
+    :where(.fmp-css-scope) .grid[data-density="large"] .thumb :is(img,video,.ph) { height: 220px !important; }
+    :where(.fmp-css-scope) .grid[data-density="compact"] .card { min-height: 144px !important; }
+    :where(.fmp-css-scope) .grid[data-density="large"] .card { min-height: 260px !important; }
+    :where(.fmp-css-scope) .grid:is([data-density="compact"],[data-density="large"]) .thumb img { object-fit: scale-down !important; }
+    :where(.fmp-css-scope) .lb[data-kind="img"] .lb-frame { touch-action: none; }
+    :where(.fmp-css-scope) .lb-zoom-layer { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; transform-origin: center; }
+    :where(.fmp-css-scope) .lb-zoom-layer img { -webkit-user-drag: none; user-select: none; }
+    :where(.fmp-css-scope) .thumb img, :where(.fmp-css-scope) .thumb video { border-radius: 12px; }
+    :where(.fmp-css-scope) .meta { min-width: 0; gap: 4px; }
+    :where(.fmp-css-scope) .meta div { min-width: 0; overflow-wrap: anywhere; }
+    :where(.fmp-css-scope) .lb { padding-top: calc(env(safe-area-inset-top) + 44px); padding-bottom: calc(env(safe-area-inset-bottom) + 76px); padding-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right)); }
+    :where(.fmp-css-scope) .lb-frame { border-radius: 18px; }
+    :where(.fmp-css-scope) .lb-frame,
+    :where(.fmp-css-scope) .lb-frame :is(img,video,canvas,iframe) { max-height: min(78vh, calc(100vh - 128px - env(safe-area-inset-top) - env(safe-area-inset-bottom))); }
+    :where(.fmp-css-scope) .lb-frame :is(img,video,canvas) { border-radius: 14px; }
+    :where(.fmp-css-scope) .lb-controls,
+    :where(.fmp-css-scope).wrap:is(.is-iphone,.is-ipad) .lb-controls {
+      display: grid; grid-template-columns: repeat(5, minmax(44px,1fr));
+      left: max(10px, env(safe-area-inset-left)); right: max(10px, env(safe-area-inset-right));
+      bottom: calc(env(safe-area-inset-bottom) + 8px); max-width: 420px; margin-inline: auto;
+      gap: 4px; padding: 5px; border-radius: 22px;
+      background: var(--fmp-control-bg, #111); border: 1px solid var(--fmp-border-soft, #444);
+    }
+    :where(.fmp-css-scope).wrap:is(.is-iphone,.is-ipad) .lb-controls { margin-left: 0; margin-right: auto; max-width: 330px; }
+    :where(.fmp-css-scope) .lb .lb-controls.zoom-ready { grid-template-columns: repeat(6, minmax(44px,1fr)); }
+    :where(.fmp-css-scope) .lb-controls .lb-btn {
+      padding: 4px 2px; min-width: 44px; min-height: 44px; border-radius: 16px;
+      background: var(--fmp-card-bg, #0b0b0b); color: var(--fmp-text, #eee);
+      font-size: 12px; white-space: nowrap;
+    }
+    :where(.fmp-css-scope) .lb-controls .lb-btn[aria-label="Lightboxを閉じる"] { background: var(--fmp-accent, #fff); color: var(--fmp-text-on-accent, #111); }
+    :where(.fmp-css-scope) .lb-controls .lb-btn[aria-pressed="true"],
+    :where(.fmp-css-scope) .lb-controls .lb-btn[aria-expanded="true"] { background: var(--fmp-accent, #fff); color: var(--fmp-text-on-accent, #111); }
+    :where(.fmp-css-scope) .lb-zoom-btn { position: static; }
+    @media (max-width: 319px) {
+      :where(.fmp-css-scope) .lb .lb-controls, :where(.fmp-css-scope) .lb .lb-controls.zoom-ready { grid-template-columns: repeat(3, minmax(44px,1fr)); }
+      :where(.fmp-css-scope) .lb { padding-bottom: calc(env(safe-area-inset-bottom) + 124px); }
+      :where(.fmp-css-scope) .lb-frame,
+      :where(.fmp-css-scope) .lb-frame :is(img,video,canvas,iframe) { max-height: calc(100vh - 176px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
+    }
+    :where(.fmp-css-scope) .lb-zoom-btn[hidden] { display: none !important; }
+    @media (min-width: 900px) {
+      :where(.fmp-css-scope) .grid[data-density="compact"] { grid-template-columns: repeat(auto-fill, minmax(min(130px, 100%), 1fr)); }
+      :where(.fmp-css-scope) .grid[data-density="large"] { grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); }
+      :where(.fmp-css-scope) .grid[data-density="compact"] .thumb :is(img,video,.ph) { height: 130px !important; }
+      :where(.fmp-css-scope) .grid[data-density="large"] .thumb :is(img,video,.ph) { height: 260px !important; }
+      :where(.fmp-css-scope) .grid[data-density="compact"] .card { min-height: 170px !important; }
+      :where(.fmp-css-scope) .grid[data-density="large"] .card { min-height: 300px !important; }
+    }
   `;
   const wrap = document.createElement('div');
   wrap.className = 'wrap fmp-css-scope';
@@ -3598,7 +4074,7 @@ function createShell() {
   header.className = 'header';
   const title = document.createElement('div');
   title.className = 'title';
-  title.textContent = SCRIPT_NAME + ' rev' + SCRIPT_REV;
+  title.textContent = 'IMG View rev' + SCRIPT_REV;
   const btns = document.createElement('div');
   btns.className = 'btns';
   const closeBtn = mkBtn('閉じる', 'btn');
@@ -3614,24 +4090,39 @@ function createShell() {
   filterBar.className = 'chips';
   filterBar.setAttribute('role', 'group');
   filterBar.setAttribute('aria-label', 'メディアフィルター');
-  ['BODY', 'IMG', 'VIDEO', 'X', 'INSTA', 'IMGUR', 'YT', 'TT', 'ALL'].forEach(function(key) {
-    const label = (key === 'BODY') ? '本文' : key;
+  const filterButtons = [];
+  const labels = {ALL:'すべて', BODY:'本文', IMG:'画像', VIDEO:'動画', EXTVIDEO:'外部動画'};
+  ['ALL', 'BODY', 'IMG', 'VIDEO', 'X', 'INSTA', 'IMGUR', 'YT', 'TT', 'EXTVIDEO'].forEach(function(key) {
+    const label = labels[key] || key;
     const chip = mkBtn(label, 'chip');
     chip.setAttribute('data-filter', key);
     chip.dataset.baseLabel = label;
     chip.setAttribute('aria-pressed', 'false');
     filterBar.appendChild(chip);
+    filterButtons.push(chip);
   });
-  const hiddenChip = mkBtn('非表示', 'chip');
+  const densityChip = mkBtn('一覧：標準', 'chip');
+  densityChip.setAttribute('data-action', 'density');
+  densityChip.setAttribute('aria-label', '一覧の表示密度：標準。押すと変更');
+  filterBar.insertBefore(densityChip, filterButtons[4]);
+  const hiddenChip = mkBtn('非表示も表示', 'chip');
   hiddenChip.setAttribute('data-action', 'toggle-hidden');
   hiddenChip.setAttribute('aria-pressed', 'false');
   hiddenChip.setAttribute('aria-label', '非表示画像の表示切替');
   filterBar.appendChild(hiddenChip);
+  const noiseChip = mkBtn('ノイズも表示', 'chip');
+  noiseChip.setAttribute('data-action', 'toggle-noise');
+  noiseChip.setAttribute('aria-label', 'ノイズ画像の表示切替');
+  noiseChip.setAttribute('aria-pressed', 'false');
+  filterBar.appendChild(noiseChip);
   const boostChip = mkBtn('巡回+', 'chip');
   boostChip.setAttribute('data-action', 'boost-crawl');
   boostChip.setAttribute('aria-pressed', 'false');
   boostChip.setAttribute('aria-label', '巡回範囲を拡張');
   filterBar.appendChild(boostChip);
+  filterBar.insertBefore(hiddenChip, filterButtons[4]);
+  filterBar.insertBefore(noiseChip, filterButtons[4]);
+  filterBar.insertBefore(boostChip, filterButtons[4]);
 
   const info = document.createElement('div');
   info.className = 'info';
@@ -3660,29 +4151,41 @@ function createShell() {
   state.ui.wrap = wrap;
   state.ui.header = header;
   state.ui.filterBar = filterBar;
+  state.ui.filterButtons = filterButtons;
+  state.ui.hiddenChip = hiddenChip;
+  state.ui.noiseChip = noiseChip;
+  state.ui.boostChip = boostChip;
   state.ui.stopBtn = stopBtn;
   state.ui.logBtn = logBtn;
   state.ui.grid = grid;
+  state.ui.densityChip = densityChip;
   state.ui.info = info;
   state.ui.progress = progress;
 
   function bindUiTap(el, handler) {
     if (!el || typeof handler !== 'function') return;
-    let lastTouchLikeTs = 0;
-    let lastNonClickTs = 0;
+    // The filter rail delegates several buttons. Suppress duplicate
+    // pointer/touch/click events per actual button, not across the rail.
+    const gestures = new WeakMap();
     const onTap = function(ev) {
+      const raw = ev.target && ev.target.nodeType === 1 ? ev.target : ev.target && ev.target.parentElement;
+      const target = el === filterBar ? raw && raw.closest('button') : el;
+      if (!target || (el === filterBar && !el.contains(target))) return;
+      let g = gestures.get(target);
+      if (!g) { g = {touchAt:0, nonClickAt:0, nonClickType:''}; gestures.set(target,g); }
       const now = Date.now();
-      if (ev.type === 'click' && (now - lastTouchLikeTs) < 450) {
+      if (ev.type === 'click' && ev.detail !== 0 && now - g.touchAt < 450) {
         try { ev.preventDefault(); } catch (e) {}
         return;
       }
       if (ev.type !== 'click') {
-        if ((now - lastNonClickTs) < 120) {
+        if (ev.type !== g.nonClickType && now - g.nonClickAt < 120) {
           try { ev.preventDefault(); } catch (e) {}
           return;
         }
-        lastNonClickTs = now;
-        lastTouchLikeTs = now;
+        g.nonClickAt = now;
+        g.nonClickType = ev.type;
+        g.touchAt = now;
         try { ev.preventDefault(); } catch (e) {}
       }
       handler(ev);
@@ -3704,6 +4207,7 @@ function createShell() {
     state.crawl.queue.length = 0;
     state.crawl.queueHead = 0;
     state.crawl.queueDedup.clear();
+    state.crawl.queuePriority.clear();
     if (state.crawl.timer) {
       clearTimeout(state.crawl.timer);
       state.crawl.timer = 0;
@@ -3744,12 +4248,26 @@ function createShell() {
     }
     const target = ev.target && ev.target.nodeType === 1 ? ev.target : (ev.target && ev.target.parentElement ? ev.target.parentElement : null);
     if (!target || !target.closest) return;
+    const densityBtn = target.closest('[data-action="density"]');
+    if (densityBtn) {
+      const modes = ['normal','compact','large'];
+      const next = modes[(modes.indexOf(state.ui.density) + 1) % modes.length];
+      setGridDensity(next);
+      return;
+    }
     const hiddenBtn = target.closest('[data-action="toggle-hidden"]');
     if (hiddenBtn) {
       state.cfg.hiddenHide = !state.cfg.hiddenHide;
       setInfoTemp(state.cfg.hiddenHide ? '非表示画像OFF' : '非表示画像ON', 1200);
       applyFilterSort();
-      updateChipUI();
+      return;
+    }
+    const noiseBtn = target.closest('[data-action="toggle-noise"]');
+    if (noiseBtn) {
+      state.cfg.noiseHide = !state.cfg.noiseHide;
+      state.ui.lastAllTap = 0;
+      setInfoTemp(state.cfg.noiseHide ? 'ノイズ画像を非表示' : 'ノイズ画像も表示', 1200);
+      applyFilterSort();
       return;
     }
     const actionBtn = target.closest('[data-action="boost-crawl"]');
@@ -3768,22 +4286,29 @@ function createShell() {
     const key = btn.getAttribute('data-filter');
     if (key === 'ALL') {
       const now = Date.now();
-      if (now - state.ui.lastAllTap < 500) {
+      if (state.ui.lastAllTap && now - state.ui.lastAllTap < 500) {
         state.cfg.noiseHide = !state.cfg.noiseHide;
         setInfoTemp(state.cfg.noiseHide ? 'ノイズ表示OFF' : 'ノイズ表示ON', 1200);
-      }
-      state.ui.lastAllTap = now;
-    }
+        state.ui.lastAllTap = 0;
+      } else state.ui.lastAllTap = now;
+    } else state.ui.lastAllTap = 0;
     setFilter(key);
   });
 
-  state.ui.progressTimer = setInterval(function() {
-    if (!state.ui.progress) return;
-    if (Date.now() - state.ui.progressLast > state.cfg.progressStaleMs) {
-      state.ui.progress.textContent = 'idle';
-    }
-  }, 500);
+  updateChipUI();
   initThumbLoader();
+}
+
+function setGridDensity(mode) {
+  if (state.ui.disposed || !state.ui.grid || !state.ui.densityChip) return;
+  const labels = {normal:'標準',compact:'小',large:'大'};
+  if (!Object.prototype.hasOwnProperty.call(labels, mode) || state.ui.density === mode) return;
+  state.ui.density = mode;
+  setAttrIfChanged(state.ui.grid, 'data-density', mode);
+  setTextIfChanged(state.ui.densityChip, '一覧：' + labels[mode]);
+  setAttrIfChanged(state.ui.densityChip, 'aria-label', '一覧の表示密度：' + labels[mode] + '。押すと変更');
+  // IO handles layout changes. Only the non-IO fallback needs a rescan.
+  if (!state.thumb.observer && typeof state.thumb.scanNow === 'function') state.thumb.scanNow();
 }
 
 function mountShell(attempt) {
@@ -4026,7 +4551,7 @@ function hideThumbOverlay(card) {
 
 function thumbQueueUi(fn) {
   try {
-    if (!state.thumb) return;
+    if (state.ui.disposed || !state.thumb) return;
     if (!state.thumb.uiQueue) state.thumb.uiQueue = [];
     if (typeof state.thumb.uiQueueHead !== 'number') state.thumb.uiQueueHead = 0;
     state.thumb.uiQueue.push(fn);
@@ -4035,14 +4560,19 @@ function thumbQueueUi(fn) {
 }
 
 function thumbScheduleUiFlush() {
-  if (!state.thumb) return;
+  if (state.ui.disposed || !state.thumb) return;
   if (state.thumb.uiFlushScheduled) return;
   state.thumb.uiFlushScheduled = true;
-  requestAnimationFrame(thumbFlushUiQueue);
+  state.thumb.uiFlushRaf = requestAnimationFrame(function() {
+    state.thumb.uiFlushRaf = 0;
+    thumbFlushUiQueue();
+  });
 }
 
 function thumbFlushUiQueue() {
-  if (!state.thumb) return;
+  if (state.ui.disposed || !state.thumb) return;
+  if (state.thumb.uiFlushRaf) cancelAnimationFrame(state.thumb.uiFlushRaf);
+  state.thumb.uiFlushRaf = 0;
   state.thumb.uiFlushScheduled = false;
   if (state.thumb.pausedByScroll) return;
   const q = state.thumb.uiQueue;
@@ -4062,20 +4592,21 @@ function thumbFlushUiQueue() {
 
   let n = 0;
   while (n < batch && head < q.length) {
-    const fn = q[head++];
+    const fn = q[head];
+    q[head++] = null;
     try { if (fn) fn(); } catch (e) {}
     n++;
   }
   state.thumb.uiQueueHead = head;
-  if (head > 64 && head * 2 >= q.length) {
+  if (head >= q.length) {
+    q.length = 0;
+    state.thumb.uiQueueHead = 0;
+  } else if (head > 64 && head * 2 >= q.length) {
     state.thumb.uiQueue = q.slice(head);
     state.thumb.uiQueueHead = 0;
   }
   const remain = state.thumb.uiQueue && ((state.thumb.uiQueue.length - (state.thumb.uiQueueHead || 0)) > 0);
-  if (remain) {
-    state.thumb.uiFlushScheduled = true;
-    requestAnimationFrame(thumbFlushUiQueue);
-  }
+  if (remain) thumbScheduleUiFlush();
 }
 
 function applyTempGpuClass(img) {
@@ -4170,6 +4701,144 @@ function thumbApplyFit(img) {
   } catch (e) {}
 }
 
+const VISUAL_W=64,VISUAL_H=40,VISUAL_MAX=256;
+function visualEligible(item) {
+  return item && !item.__failed && !isSourceSuppressed(item) &&
+    !(state.cfg.hiddenHide && (item.__allHidden || item.__autoHidden)) &&
+    !(state.cfg.noiseHide && item.__isNoise);
+}
+
+function visualSample(item,img) {
+  const w=img.naturalWidth,h=img.naturalHeight;
+  if(w<80 || h<64 || w*h<10000)return null;
+  const actual=getDisplayUrl(item);
+  let u;
+  try{u=new URL(actual,location.href);}catch(e){return null;}
+  if(u.origin!==location.origin || !/\.jpe?g$/i.test(u.pathname))return null;
+  const q=new URLSearchParams(u.search);
+  for(const key of ['w','h','width','height','dpr','__ivb_retry'])q.delete(key);
+  try{
+    const canvas=state.items.visualCanvas || (state.items.visualCanvas=document.createElement('canvas'));
+    canvas.width=VISUAL_W;canvas.height=VISUAL_H;
+    const ctx=canvas.getContext('2d',{willReadFrequently:true});
+    if(!ctx)return null;
+    ctx.imageSmoothingQuality='high';
+    ctx.drawImage(img,0,0,VISUAL_W,VISUAL_H);
+    const pixels=ctx.getImageData(0,0,VISUAL_W,VISUAL_H).data;
+    let sum=0,sq=0;
+    for(let i=0;i<pixels.length;i+=4){
+      if(pixels[i+3]!==255)return null;
+      const l=(pixels[i]*3+pixels[i+1]*6+pixels[i+2])/10;
+      sum+=l;sq+=l*l;
+    }
+    const n=VISUAL_W*VISUAL_H,mean=sum/n;
+    if(sq/n-mean*mean<324)return null;
+    return {item,url:actual,w,h,pixels,query:q.toString(),host:u.host,page:item.__orderPage,scope:item.scope,provider:getMediaProviderType(item)};
+  }catch(e){return null;}
+}
+
+function visualPixelsMatch(a,b,crop) {
+  let ax=1,bx=1,ay=1,by=1;
+  if(crop){
+    const ar=a.w/a.h,br=b.w/b.h;
+    if(crop===1){if(ar>br)ax=br/ar;else bx=ar/br;}
+    else {if(ar>br)by=br/ar;else ay=ar/br;}
+  }
+  const sample=(p,x,y,c)=>{
+    const ix=Math.max(0,Math.min(VISUAL_W-1,x)),iy=Math.max(0,Math.min(VISUAL_H-1,y));
+    const x0=Math.floor(ix),x1=Math.min(VISUAL_W-1,x0+1),y0=Math.floor(iy),y1=Math.min(VISUAL_H-1,y0+1);
+    const dx=ix-x0,dy=iy-y0;
+    return (p[(y0*VISUAL_W+x0)*4+c]*(1-dx)+p[(y0*VISUAL_W+x1)*4+c]*dx)*(1-dy)+
+      (p[(y1*VISUAL_W+x0)*4+c]*(1-dx)+p[(y1*VISUAL_W+x1)*4+c]*dx)*dy;
+  };
+  let total=0,bad=0;
+  const tiles=new Float32Array(16);
+  const coarse=new Float32Array((VISUAL_W/2)*(VISUAL_H/2)*3);
+  for(let y=0;y<VISUAL_H;y++)for(let x=0;x<VISUAL_W;x++){
+    let d=0;
+    for(let c=0;c<3;c++){
+      const i=(y*VISUAL_W+x)*4+c;
+      const v=crop?sample(a.pixels,(x-(VISUAL_W-1)/2)*ax+(VISUAL_W-1)/2,(y-(VISUAL_H-1)/2)*ay+(VISUAL_H-1)/2,c):a.pixels[i];
+      const z=crop?sample(b.pixels,(x-(VISUAL_W-1)/2)*bx+(VISUAL_W-1)/2,(y-(VISUAL_H-1)/2)*by+(VISUAL_H-1)/2,c):b.pixels[i];
+      d+=Math.abs(v-z)/3;
+      coarse[(Math.floor(y/2)*(VISUAL_W/2)+Math.floor(x/2))*3+c]+=(v-z)/4;
+    }
+    total+=d;if(d>18)bad++;
+    tiles[Math.floor(y/10)*4+Math.floor(x/16)]+=d;
+    if(total>6*VISUAL_W*VISUAL_H || bad>0.075*VISUAL_W*VISUAL_H)return false;
+  }
+  if(total/(VISUAL_W*VISUAL_H)>6 || !tiles.every(v=>v/160<=14))return false;
+  let residual=0,large=0;
+  const local=new Float32Array(16);
+  for(let y=0;y<VISUAL_H/2;y++)for(let x=0;x<VISUAL_W/2;x++){
+    const i=(y*(VISUAL_W/2)+x)*3;
+    const d=(Math.abs(coarse[i])+Math.abs(coarse[i+1])+Math.abs(coarse[i+2]))/3;
+    residual+=d;if(d>15)large++;
+    local[Math.floor(y/5)*4+Math.floor(x/8)]+=d;
+  }
+  return residual/(VISUAL_W*VISUAL_H/4)<=4.2 && large<=0.055*VISUAL_W*VISUAL_H/4 && local.every(v=>v/40<=9);
+}
+
+function visualRenditionMatch(a,b) {
+  if(a.page!==b.page || a.host!==b.host || a.scope!==b.scope || a.provider!==b.provider || a.query!==b.query || a.url===b.url)return false;
+  const ratio=Math.max(a.w*a.h,b.w*b.h)/Math.min(a.w*a.h,b.w*b.h);
+  const aspect=Math.max(a.w/a.h,b.w/b.h)/Math.min(a.w/a.h,b.w/b.h);
+  if(aspect>1.28)return false;
+  if(ratio<1.20){
+    // Equal-size independent URLs require exact decoded sample equality.
+    return a.w===b.w && a.h===b.h && a.pixels.every((v,i)=>v===b.pixels[i]);
+  }
+  if(aspect>1.035 && /(?:^|&)(?:crop|rect|fit|fp-x|fp-y)=/i.test(a.query))return false;
+  return visualPixelsMatch(a,b,false) || (aspect>1.035 && (visualPixelsMatch(a,b,1) || visualPixelsMatch(a,b,2)));
+}
+
+function refreshVisualGroup(group) {
+  const eligible=group.filter(e=>visualEligible(e.item));
+  const earliest=eligible.reduce((v,e)=>!v || compareMediaOrder(e.item,v.item)<0?e:v,null);
+  const winner=eligible.reduce((v,e)=>!v || e.w*e.h>v.w*v.h || (e.w*e.h===v.w*v.h && compareMediaOrder(e.item,v.item)<0)?e:v,null);
+  for(const e of group){
+    const it=e.item,duplicate=!!(winner && e!==winner && eligible.includes(e));
+    const order=winner===e && earliest && earliest!==e?earliest.item:null;
+    if(!!it.__hashDup!==duplicate || (it.__visualOrder || null)!==order){
+      it.__hashDup=duplicate;it.__visualOrder=order;
+      state.items.orderDirty=true;
+      if(duplicate && it.card)it.card.classList.add('is-hidden');
+      invalidateVisibilityStats('visual-rendition');
+      scheduleApplyFilterSort('visual-rendition');
+    }
+  }
+}
+
+function forgetVisualFingerprint(item) {
+  const group=item.__visualGroup;
+  if(!group)return;
+  const i=group.findIndex(e=>e.item===item);
+  if(i>=0){group.splice(i,1);state.items.visualCount--;}
+  item.__visualGroup=null;item.__hashDup=false;item.__visualOrder=null;
+  if(!group.length){
+    const j=state.items.visualGroups.indexOf(group);
+    if(j>=0)state.items.visualGroups.splice(j,1);
+  }else refreshVisualGroup(group);
+  state.items.orderDirty=true;
+  invalidateVisibilityStats('visual-source-change');
+  scheduleApplyFilterSort('visual-source-change');
+}
+
+function registerVisualFingerprint(item,img) {
+  if(!visualEligible(item) || item.__visualGroup || state.items.visualCount>=VISUAL_MAX)return;
+  const entry=visualSample(item,img);
+  if(!entry)return;
+  let group=null,compared=0;
+  for(const g of state.items.visualGroups){
+    if(g.length>=8 || g[0].page!==entry.page || g[0].host!==entry.host)continue;
+    if(++compared>64)break;
+    if(g.every(e=>visualRenditionMatch(e,entry))){group=g;break;}
+  }
+  if(!group){group=[];state.items.visualGroups.push(group);}
+  group.push(entry);item.__visualGroup=group;state.items.visualCount++;
+  if(group.length>1)refreshVisualGroup(group);
+}
+
 function applyThumbMetrics(item, img, card) {
   try {
     perfMeasureSourceEl(item);
@@ -4182,10 +4851,11 @@ function applyThumbMetrics(item, img, card) {
       }
       const prevAutoHidden = !!item.__autoHidden;
       const prevAutoHiddenReason = item.__autoHiddenReason || '';
-      if (item.kind === 'img' && item.__sourceEl) {
-        const thumbMeta = { width: w, height: h };
-        item.__thumbScore = scoreThumbnailLike(item.__sourceEl, thumbMeta, item.openUrl || item.url);
-        const autoHiddenReason = getAutoHiddenReason(item.__sourceEl, thumbMeta, item.openUrl || item.url, item.__thumbScore);
+      if (item.kind === 'img' && (item.__sourceEl || item.__thumbSourceFacts)) {
+        const thumbMeta = { width: w, height: h, pageUrl:item.pageUrl, mediaBase:item.mediaBase };
+        const sourceFacts = item.__thumbSourceFacts || getThumbSourceFacts(item.__sourceEl, thumbMeta);
+        item.__thumbScore = scoreThumbnailLike(item.__sourceEl, thumbMeta, item.openUrl || item.url, sourceFacts);
+        const autoHiddenReason = getAutoHiddenReason(item.__sourceEl, thumbMeta, item.openUrl || item.url, item.__thumbScore, sourceFacts);
         if ((item.dupCount || 1) <= 1) {
           item.__autoHidden = !!autoHiddenReason;
           item.__autoHiddenReason = autoHiddenReason;
@@ -4208,13 +4878,14 @@ function applyThumbMetrics(item, img, card) {
         (h < state.cfg.noiseMinH) ||
         (area < state.cfg.noiseMinArea) ||
         (aspect > state.cfg.noiseMaxAspect);
-      if (isNoise && !item.__isNoise) {
-        item.__isNoise = true;
-        state.items.noiseCount += 1;
+      const wasNoise = !!item.__isNoise;
+      if (isNoise !== wasNoise) {
+        item.__isNoise = isNoise;
+        state.items.noiseCount = Math.max(0, state.items.noiseCount + (isNoise ? 1 : -1));
+        invalidateVisibilityStats('thumb-noise');
+        scheduleApplyFilterSort('thumb-noise');
       }
-      if (isNoise) {
-        item.__noiseReason = noiseReason || item.__noiseReason || 'noise';
-      }
+      item.__noiseReason = isNoise ? (noiseReason || 'noise') : '';
       if (card) {
         const dim = card.querySelector('.meta div');
         if (dim) dim.textContent = formatItemMetaText(item);
@@ -4454,14 +5125,13 @@ function initThumbLoader() {
     const margin = getAdaptiveThumbRootMarginPx();
     const top = rect.top - margin;
     const bottom = rect.bottom + margin;
-    const cards = Array.from(grid.querySelectorAll('.card'));
-    cards.forEach(function(card) {
+    for (const card of grid.querySelectorAll('.card')) {
+      const item = state.items.byId.get(card.dataset.id);
+      if (!item || item.__failed || item.__thumbLoaded || item.__thumbLoading ||
+          (item.kind !== 'img' && !item.__thumbPreview)) continue;
       const r = card.getBoundingClientRect();
-      if (r.bottom >= top && r.top <= bottom) {
-        const item = state.items.byId.get(card.dataset.id);
-        if (item) thumbEnqueue(item);
-      }
-    });
+      if (r.bottom >= top && r.top <= bottom) thumbEnqueue(item);
+    }
   };
   const schedule = function() {
     if (scheduled) return;
@@ -4603,6 +5273,7 @@ function initThumbLoader() {
     try { window.removeEventListener('resize', state.thumb.onResize); } catch (e) {}
   }
   state.thumb.onResize = function() {
+    resetLightboxZoomOnResize();
     if (state.thumb && typeof state.thumb.scanNow === 'function') state.thumb.scanNow();
   };
   window.addEventListener('resize', state.thumb.onResize);
@@ -4640,7 +5311,8 @@ function compactThumbQueue(name) {
   const headKey = name === 'pri' ? 'queuePriHead' : 'queueHead';
   const q = state.thumb[queueKey];
   const head = state.thumb[headKey] || 0;
-  if (!q || !q.length) {
+  if (!q || head >= q.length) {
+    if (q) q.length = 0;
     state.thumb[headKey] = 0;
     return;
   }
@@ -4706,6 +5378,9 @@ function popPriorityThumbQueue() {
 function promoteQueuedThumbItem(item) {
   if (!state.thumb || !item) return;
   if (item.__thumbQueuedPri === 1) return;
+  const q = state.thumb.queue;
+  const pos = q.indexOf(item, state.thumb.queueHead || 0);
+  if (pos >= 0) q.splice(pos, 1);
   perfCount('thumb.promote');
   pushThumbQueue(item, true);
 }
@@ -4717,18 +5392,19 @@ function requeueThumbItem(item) {
 }
 
 function thumbSchedulePump() {
-  if (!state.thumb) return;
+  if (state.ui.disposed || !state.thumb) return;
   if (state.thumb.pumpScheduled) return;
   state.thumb.pumpScheduled = true;
-  requestAnimationFrame(function() {
-    if (!state.thumb) return;
+  state.thumb.pumpRaf = requestAnimationFrame(function() {
+    state.thumb.pumpRaf = 0;
     state.thumb.pumpScheduled = false;
     thumbPump();
   });
 }
 
 function thumbEnqueue(item, priority) {
-  if (!item) return;
+  if (state.ui.disposed || !item) return;
+  if (item.__failed || item.__thumbLoaded || item.__thumbLoading || isSourceSuppressed(item) || item.__hashDup) return;
   const canLoad = (item.kind === 'img') || !!item.__thumbPreview;
   if (!canLoad) return;
   if (!item.card) return;
@@ -4738,7 +5414,6 @@ function thumbEnqueue(item, priority) {
     if (img) item.__thumbImg = img;
   }
   if (!img) return;
-  if (item.__failed || item.__thumbLoaded || item.__thumbLoading) return;
   if (!state.thumb) return;
   const pri = !!priority;
   if (state.thumb.queued.has(item.id)) {
@@ -4756,7 +5431,7 @@ function thumbEnqueue(item, priority) {
 }
 
 function thumbPump() {
-  if (!state.thumb || state.thumb.paused) return;
+  if (state.ui.disposed || !state.thumb || state.thumb.paused) return;
   const prevMax = state.thumb.max || 0;
   const baseMax = getThumbMaxConcurrent() || 0;
   let max = baseMax;
@@ -4907,11 +5582,16 @@ function getThumbCandidateUrls(item, src) {
   const seen = new Set();
   const add = function(u) {
     const s = String(u || '').trim();
-    if (!s || seen.has(s)) return;
+    if (!s || seen.has(s) || (item && item.kind==='img' && isExcludedLiveImage(s))) return;
     seen.add(s);
     out.push(s);
   };
   add(src);
+  if (item && item.kind === 'img') {
+    add(item.fallbackRequestUrl);
+    if (item.pictureFallbackUrls) item.pictureFallbackUrls.forEach(add);
+    if (item.imgurFallbackUrls) item.imgurFallbackUrls.forEach(add);
+  }
   if (item && Array.isArray(item.__thumbCandidates)) {
     item.__thumbCandidates.forEach(add);
   }
@@ -4919,7 +5599,7 @@ function getThumbCandidateUrls(item, src) {
 }
 
 function startThumbLoad(item) {
-  if (!item || !item.card) return;
+  if (!item || !item.card || isSourceSuppressed(item) || item.__hashDup) return;
   const card = item.card;
   let img = item.__thumbImg;
   if (!img || !img.isConnected) {
@@ -4931,6 +5611,8 @@ function startThumbLoad(item) {
   const src = img.dataset && img.dataset.src ? img.dataset.src : getDisplayUrl(item);
   if (!src) return;
   const candidateUrls = getThumbCandidateUrls(item, src);
+  if (!candidateUrls.length) return;
+  const requestAtStart = item.requestUrl;
   const token = (item.__thumbToken = (item.__thumbToken || 0) + 1);
   const ctx = { token: token, aborted: false, abort: null };
   item.__thumbCtx = ctx;
@@ -5010,6 +5692,7 @@ function startThumbLoad(item) {
     const pendingRefresh = !!item.__thumbPendingRefresh;
     item.__thumbPendingRefresh = 0;
     item.__thumbLoaded = true;
+    if (previewOnly) item.__previewSucceeded = true;
     perfCount('thumb.load.success');
     if (item.__thumbInView) perfCount('thumb.visible.loaded');
     releaseSourceEl(item, 'thumb-success');
@@ -5029,18 +5712,30 @@ function startThumbLoad(item) {
       clearOverlayShowTimer(item);
       item.__thumbLoaded = true;
       hideThumbOverlay(card);
+      item.__previewSucceeded = false;
+      const pendingRefresh = !!item.__thumbPendingRefresh;
+      item.__thumbPendingRefresh = 0;
       perfCount('thumb.load.previewError');
       if (item.__thumbInView) perfCount('thumb.visible.error');
       releaseSourceEl(item, 'thumb-preview-error');
       finish();
+      if (pendingRefresh && item.card) updateCard(item);
       if (item.__thumbCtx && item.__thumbCtx.token === token) item.__thumbCtx = null;
       return;
     }
     clearOverlayShowTimer(item);
+    if (item.imgurFallbackUrls && item.requestUrl === requestAtStart) {
+      const extra = item.imgurFallbackUrls.filter(u => !candidateUrls.includes(u) && !isExcludedLiveImage(u));
+      if (extra.length) {
+        candidateUrls.push(...extra.slice(0,3));
+        if (scheduleNextCandidate()) return;
+      }
+    }
     state.items.errorCount += 1;
     perfCount('thumb.load.error');
     if (item.__thumbInView) perfCount('thumb.visible.error');
     item.__failed = true;
+    forgetVisualFingerprint(item);
     invalidateVisibilityStats('thumb-fail');
     try {
       if (state.thumb && state.thumb.observer) {
@@ -5109,7 +5804,8 @@ function startThumbLoad(item) {
         return;
       }
       if (!isSameLoadedSrc((img.currentSrc || img.src), targetSrc)) return;
-      if (!previewOnly) applyThumbMetrics(item, img, card);
+      if (previewOnly && /https:\/\/i\.ytimg\.com\/vi\/[^/]+\/(?:maxresdefault|sddefault|hqdefault|mqdefault)\.jpg/i.test(baseSrc) &&
+          img.naturalWidth <= 120 && img.naturalHeight <= 90 && scheduleNextCandidate()) return;
       const show = function() {
         if (done) return;
         if (!item.__thumbCtx || item.__thumbCtx.token !== token) {
@@ -5117,6 +5813,16 @@ function startThumbLoad(item) {
           return;
         }
         clearOverlayShowTimer(item);
+        if (!previewOnly && item.requestUrl === requestAtStart) {
+          if (candidateIndex > 0 || (candidateUrls[candidateIndex] && candidateUrls[candidateIndex] !== src)) {
+            item.__resolvedRequestFor = requestAtStart;
+            item.__resolvedRequestUrl = candidateUrls[candidateIndex];
+            item.width = img.naturalWidth || 0;
+            item.height = img.naturalHeight || 0;
+          }
+          applyThumbMetrics(item, img, card);
+          registerVisualFingerprint(item,img);
+        }
         revealThumb(card, img);
         perfCount('thumb.reveal');
         perfMarkOnce('thumb.firstReveal');
@@ -5191,20 +5897,38 @@ function startThumbLoad(item) {
   attempt();
 }
 
+function getMediaProviderType(item) {
+  if (!item) return '';
+  let t = (item.embedType || '').toUpperCase();
+  if (!t) {
+    try {
+      const host = new URL(item.requestUrl || item.url, location.href).hostname.toLowerCase();
+      if (host === 'i.imgur.com') t = 'IMGUR';
+      else if (host === 'pbs.twimg.com' || host === 'video.twimg.com') t = 'X';
+      else if (host === 'i.ytimg.com') t = 'YT';
+    } catch (e) {}
+  }
+  return t;
+}
+
+function isImgurFilterItem(item) {
+  return getMediaProviderType(item) === 'IMGUR';
+}
+
 function getMediaBadgeInfo(item) {
   if (!item) return null;
-  if (item.kind === 'video') {
-    return { text: '▶', full: 'VIDEO' };
-  }
-  if (item.kind === 'embed' || item.embedType) {
-    const t = ((item.embedType || '').toUpperCase()) || 'OTHER';
-    let text = '?';
-    if (t === 'X' || t === 'TT' || t === 'YT') text = t;
-    else if (t === 'INSTA') text = 'IG';
-    else if (t === 'IMGUR') text = 'IM';
-    return { text: text, full: t };
-  }
-  return null;
+  let t = getMediaProviderType(item);
+  if (!t && item.kind === 'video') t = 'VIDEO';
+  if (!t && item.kind === 'embed') t = 'OTHER';
+  const names = {VIDEO:'動画',YT:'YouTube',IMGUR:'Imgur',X:'X',TT:'TikTok',INSTA:'Instagram',VIMEO:'Vimeo',DM:'Dailymotion',TWITCH:'Twitch',NICO:'ニコニコ動画',BILI:'Bilibili',FB:'Facebook',OTHER:'埋込'};
+  if (!t) return null;
+  return {text:(names[t] || t) + (item.kind === 'video' && t !== 'VIDEO' ? ' ▶' : ''),full:t};
+}
+
+function setMediaCardType(card, item) {
+  const badge = getMediaBadgeInfo(item);
+  if (badge) setAttrIfChanged(card, 'data-media-type', badge.full);
+  else if (card.hasAttribute('data-media-type')) card.removeAttribute('data-media-type');
 }
 
 function renderEmbedPlaceholder(ph, item) {
@@ -5248,7 +5972,8 @@ function renderEmbedPlaceholder(ph, item) {
     });
     return;
   }
-  ph.textContent = 'TAP FOR LB ' + item.embedType;
+  const badge = getMediaBadgeInfo(item);
+  ph.textContent = badge ? badge.text + ' ・ タップして開く' : 'タップして開く';
 }
 
 function createCard(item) {
@@ -5256,6 +5981,7 @@ function createCard(item) {
   card.className = 'card';
   card.dataset.id = item.id;
   card.dataset.kind = item.kind || '';
+  setMediaCardType(card, item);
   card.dataset.oh = item.__allHidden ? '1' : '0';
   card.dataset.ah = item.__autoHidden ? '1' : '0';
   if (item.embedType) {
@@ -5317,7 +6043,7 @@ function createCard(item) {
   } else if (item.kind === 'video') {
     const ph = document.createElement('div');
     ph.className = 'ph';
-    ph.textContent = 'VIDEO';
+    ph.textContent = '動画 ・ タップして再生';
     ph.style.height = th + 'px';
     ph.style.width = '100%';
     thumb.appendChild(ph);
@@ -5328,8 +6054,11 @@ function createCard(item) {
     badge.title = badgeInfo ? badgeInfo.full : 'VIDEO';
     badge.setAttribute('aria-label', badgeInfo ? badgeInfo.full : 'VIDEO');
     thumb.appendChild(badge);
-    if (item.poster) {
-      appendThumbImage(item.poster, true);
+    const urls = getCardPreviewUrls(item);
+    item.__thumbCandidates = urls;
+    item.__previewKey = urls.join('\n');
+    if (urls.length) {
+      appendThumbImage(urls[0], true);
       item.__thumbPreview = true;
     }
   } else if (item.kind === 'embed') {
@@ -5346,8 +6075,9 @@ function createCard(item) {
     badge.title = badgeInfo ? badgeInfo.full : (((item.embedType || '').toUpperCase()) || 'OTHER');
     badge.setAttribute('aria-label', badgeInfo ? badgeInfo.full : (((item.embedType || '').toUpperCase()) || 'OTHER'));
     thumb.appendChild(badge);
-    const embedThumbUrls = getEmbedThumbUrls(item);
+    const embedThumbUrls = getCardPreviewUrls(item);
     item.__thumbCandidates = embedThumbUrls.slice();
+    item.__previewKey = embedThumbUrls.join('\n');
     if (embedThumbUrls.length) {
       appendThumbImage(embedThumbUrls[0], true);
       item.__thumbPreview = true;
@@ -5501,9 +6231,45 @@ function createCard(item) {
   return card;
 }
 
+function getCardPreviewUrls(item) {
+  if (item.kind === 'video') {
+    const direct = getImgurDirectMedia(item.requestUrl);
+    return uniqueThumbUrls([item.poster].concat(item.previewUrls || [], item.__capturedPoster || [],
+      direct && direct.video ? getImgurThumbUrls(item) : []));
+  }
+  return getEmbedThumbUrls(item);
+}
+
+function refreshCardPreview(item, thumb) {
+  if (!thumb || item.kind === 'img' || thumb.querySelector('iframe') || state.ui.disposed) return;
+  const urls = getCardPreviewUrls(item);
+  const key = urls.join('\n');
+  if (!urls.length || item.__previewKey === key) return;
+  item.__previewKey = key;
+  item.__thumbCandidates = urls;
+  // A successful preview remains valid when new metadata arrives.
+  if (item.__thumbLoaded && item.__previewSucceeded) return;
+  if (item.__thumbLoading) { item.__previewKey = ''; item.__thumbPendingRefresh = 1; return; }
+  let img = item.__thumbImg;
+  if (!img || !img.isConnected) {
+    img = document.createElement('img');
+    img.decoding = 'async'; img.alt = '';
+    img.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:' + (state.env.isWide ? 180 : 140) + 'px;opacity:0';
+    thumb.appendChild(img);
+    item.__thumbImg = img;
+  }
+  img.src = BLANK_GIF;
+  img.dataset.src = urls[0];
+  img.style.opacity = '0';
+  item.__thumbPreview = true;
+  item.__thumbLoaded = false;
+  thumbEnqueue(item);
+}
+
 function updateCard(item) {
   if (!item.card) return;
   item.card.dataset.kind = item.kind || '';
+  setMediaCardType(item.card, item);
   item.card.dataset.oh = item.__allHidden ? '1' : '0';
   item.card.dataset.ah = item.__autoHidden ? '1' : '0';
   if (item.embedType) {
@@ -5520,6 +6286,7 @@ function updateCard(item) {
       if (ph) renderEmbedPlaceholder(ph, item);
     }
   }
+  refreshCardPreview(item, thumbBtn);
   let mediaBadge = item.card.querySelector('.thumb .badge');
   if (!mediaBadge) {
     const badgeInfo = getMediaBadgeInfo(item);
@@ -5548,9 +6315,11 @@ function updateCard(item) {
   const displayUrl = getDisplayUrl(item);
   const shownSrc = img ? (img.currentSrc || img.src || '') : '';
   const requestedSrc = (img && img.dataset) ? (img.dataset.src || '') : '';
-  const sameShownAsDisplay = !!(shownSrc && isSameImageVariantUrl(shownSrc, displayUrl));
-  const sameRequestedAsDisplay = !!(requestedSrc && isSameImageVariantUrl(requestedSrc, displayUrl));
-  const urlChanged = !!(item.__renderUrl && !isSameImageVariantUrl(item.__renderUrl, displayUrl));
+  const exactSource = !!item.requestUrl;
+  const sameSource = exactSource ? isSameLoadedSrc : isSameImageVariantUrl;
+  const sameShownAsDisplay = !!(shownSrc && sameSource(shownSrc, displayUrl));
+  const sameRequestedAsDisplay = !!(requestedSrc && sameSource(requestedSrc, displayUrl));
+  const urlChanged = !!(item.__renderUrl && !sameSource(item.__renderUrl, displayUrl));
   const loadingWithSwitch = !!(item.__thumbLoading && !sameRequestedAsDisplay && urlChanged);
   if (loadingWithSwitch) item.__thumbPendingRefresh = 1;
   const keepCurrentLoad = !!(item.__thumbLoading && (sameRequestedAsDisplay || loadingWithSwitch));
@@ -5653,16 +6422,16 @@ function updateLightboxChrome() {
   if (state.lb.counter) {
     const current = state.lb.list.length ? (state.lb.index + 1) : 0;
     const text = current + ' / ' + state.lb.list.length;
-    state.lb.counter.textContent = text;
-    state.lb.counter.setAttribute('aria-label', 'メディア ' + current + ' / ' + state.lb.list.length);
+    setTextIfChanged(state.lb.counter, text);
+    setAttrIfChanged(state.lb.counter, 'aria-label', 'メディア ' + current + ' / ' + state.lb.list.length);
   }
   if (state.lb.infoPanel) {
-    state.lb.infoPanel.textContent = formatLightboxInfo(item);
-    state.lb.infoPanel.hidden = !state.lb.infoOpen;
+    if (state.lb.infoOpen) setTextIfChanged(state.lb.infoPanel, formatLightboxInfo(item));
+    if (state.lb.infoPanel.hidden === state.lb.infoOpen) state.lb.infoPanel.hidden = !state.lb.infoOpen;
   }
   if (state.lb.infoBtn) {
-    state.lb.infoBtn.setAttribute('aria-expanded', state.lb.infoOpen ? 'true' : 'false');
-    state.lb.infoBtn.setAttribute('aria-label', state.lb.infoOpen ? '詳細を閉じる' : '詳細を表示');
+    setAttrIfChanged(state.lb.infoBtn, 'aria-expanded', state.lb.infoOpen ? 'true' : 'false');
+    setAttrIfChanged(state.lb.infoBtn, 'aria-label', state.lb.infoOpen ? '詳細を閉じる' : '詳細を表示');
   }
 }
 
@@ -5695,18 +6464,20 @@ function createLightbox() {
     if (!el || typeof handler !== 'function') return;
     let lastTouchLikeTs = 0;
     let lastNonClickTs = 0;
+    let lastNonClickType = '';
     const onTap = function(ev) {
       const now = Date.now();
-      if (ev.type === 'click' && (now - lastTouchLikeTs) < 450) {
+      if (ev.type === 'click' && ev.detail !== 0 && (now - lastTouchLikeTs) < 450) {
         try { ev.preventDefault(); } catch (e) {}
         return;
       }
       if (ev.type !== 'click') {
-        if ((now - lastNonClickTs) < 120) {
+        if (ev.type !== lastNonClickType && (now - lastNonClickTs) < 120) {
           try { ev.preventDefault(); } catch (e) {}
           return;
         }
         lastNonClickTs = now;
+        lastNonClickType = ev.type;
         lastTouchLikeTs = now;
         try { ev.preventDefault(); } catch (e) {}
       }
@@ -5763,11 +6534,15 @@ function createLightbox() {
   controls.setAttribute('role', 'group');
   controls.setAttribute('aria-label', 'Lightbox操作');
 
-  const prevBtn = mkBtn('Prev', 'lb-btn');
-  const nextBtn = mkBtn('Next', 'lb-btn');
+  const prevBtn = mkBtn('‹ 前', 'lb-btn');
+  const nextBtn = mkBtn('次 ›', 'lb-btn');
   const infoBtn = mkBtn('ⓘ', 'lb-btn');
   const openBtn = mkBtn('↗', 'lb-btn');
-  const closeBtn = mkBtn('Close', 'lb-btn');
+  const closeBtn = mkBtn('閉じる', 'lb-btn');
+  const zoomBtn = mkBtn('拡大', 'lb-btn lb-zoom-btn');
+  zoomBtn.hidden = true;
+  zoomBtn.setAttribute('aria-label', '画像を2倍に拡大');
+  zoomBtn.setAttribute('aria-pressed', 'false');
   prevBtn.setAttribute('aria-label', '前のメディア');
   nextBtn.setAttribute('aria-label', '次のメディア');
   infoBtn.setAttribute('aria-label', '詳細を表示');
@@ -5778,9 +6553,10 @@ function createLightbox() {
 
   controls.appendChild(prevBtn);
   controls.appendChild(nextBtn);
+  controls.appendChild(closeBtn);
+  controls.appendChild(zoomBtn);
   controls.appendChild(infoBtn);
   controls.appendChild(openBtn);
-  controls.appendChild(closeBtn);
 
   lb.appendChild(counter);
   lb.appendChild(infoPanel);
@@ -5788,6 +6564,11 @@ function createLightbox() {
   lb.appendChild(controls);
   state.ui.wrap.appendChild(lb);
 
+  bindLbTap(zoomBtn, function(ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    toggleLightboxZoom();
+  });
   bindLbTap(prevBtn, function(ev) {
     ev.preventDefault();
     moveLightbox(-1);
@@ -5816,51 +6597,7 @@ function createLightbox() {
     if (ev.target === lb) closeLightbox();
   });
 
-  let swipeStart = null;
-  frame.addEventListener('touchstart', function(ev) {
-    swipeStart = null;
-    const item = state.lb.list[state.lb.index];
-    if (!state.lb.open || !item || item.kind !== 'img') return;
-    if (!ev.touches || ev.touches.length !== 1) return;
-    const target = ev.target && ev.target.nodeType === 1 ? ev.target : null;
-    if (target && target.closest && target.closest('.lb-badge')) return;
-    const t = ev.touches[0];
-    swipeStart = {
-      id: t.identifier,
-      x: t.clientX,
-      y: t.clientY,
-      at: Date.now()
-    };
-  }, { passive: true });
-
-  frame.addEventListener('touchend', function(ev) {
-    if (!swipeStart) return;
-    const start = swipeStart;
-    swipeStart = null;
-    const item = state.lb.list[state.lb.index];
-    if (!state.lb.open || !item || item.kind !== 'img') return;
-    const changed = ev.changedTouches || [];
-    let t = null;
-    for (let i = 0; i < changed.length; i += 1) {
-      if (changed[i].identifier === start.id) {
-        t = changed[i];
-        break;
-      }
-    }
-    if (!t) return;
-    const dx = t.clientX - start.x;
-    const dy = t.clientY - start.y;
-    const dt = Date.now() - start.at;
-    if (dt > 900) return;
-    if (Math.abs(dx) < 48) return;
-    if (Math.abs(dx) <= Math.abs(dy) * 1.25) return;
-    perfCount('lb.swipe');
-    moveLightbox(dx < 0 ? 1 : -1);
-  }, { passive: true });
-
-  frame.addEventListener('touchcancel', function() {
-    swipeStart = null;
-  }, { passive: true });
+  bindLightboxZoomGestures(frame);
 
   const onKeyDown = function(ev) {
     if (!state.lb.open) return;
@@ -5886,6 +6623,14 @@ function createLightbox() {
     if (!editable && ev.key === 'ArrowRight') {
       ev.preventDefault();
       moveLightbox(1);
+      return;
+    }
+    if (!editable && activeLightboxZoom() && (ev.key === '+' || ev.key === '=' || ev.key === '0' || ev.key === '-')) {
+      ev.preventDefault();
+      if (ev.key === '0' || ev.key === '-') {
+        const z = activeLightboxZoom();
+        setLightboxZoom(z, 1, 0, 0);
+      } else toggleLightboxZoom();
       return;
     }
     if (ev.key !== 'Tab') return;
@@ -5919,13 +6664,189 @@ function createLightbox() {
   state.lb.infoBtn = infoBtn;
   state.lb.openBtn = openBtn;
   state.lb.closeBtn = closeBtn;
+  state.lb.zoomBtn = zoomBtn;
   state.lb.onKeyDown = onKeyDown;
 }
 
+function resetLightboxZoom() {
+  const z = state.lb.zoom;
+  if (z) {
+    if (z.raf) cancelAnimationFrame(z.raf);
+    if (z.layer) z.layer.style.removeProperty('transform');
+    state.lb.zoom = null;
+  }
+  const btn = state.lb.zoomBtn;
+  if (btn) {
+    if (btn.parentElement) btn.parentElement.classList.remove('zoom-ready');
+    btn.hidden = true;
+    setTextIfChanged(btn, '拡大');
+    setAttrIfChanged(btn, 'aria-label', '画像を2倍に拡大');
+    setAttrIfChanged(btn, 'aria-pressed', 'false');
+  }
+}
+
+function createLightboxZoom(layer, img, token) {
+  state.lb.zoom = {layer:layer, img:img, token:token, scale:1, x:0, y:0, raf:0, gesture:null, tap:null, ready:false};
+}
+
+function currentLightboxZoom() {
+  const z = state.lb.zoom;
+  return z && state.lb.open && !state.ui.disposed &&
+    isLightboxTokenCurrent(z.token) && z.layer.isConnected ? z : null;
+}
+
+function activeLightboxZoom() {
+  const z = currentLightboxZoom();
+  return z && z.ready ? z : null;
+}
+
+function setLightboxZoom(z, scale, x, y) {
+  if (activeLightboxZoom() !== z) return;
+  scale = Math.max(1, Math.min(4, scale));
+  const w = z.width || z.layer.offsetWidth;
+  const h = z.height || z.layer.offsetHeight;
+  if (!w || !h) return;
+  const maxX = w * (scale - 1) / 2, maxY = h * (scale - 1) / 2;
+  z.scale = scale;
+  z.x = Math.max(-maxX, Math.min(maxX, x));
+  z.y = Math.max(-maxY, Math.min(maxY, y));
+  if (!z.raf) z.raf = requestAnimationFrame(function() {
+    z.raf = 0;
+    if (activeLightboxZoom() !== z) return;
+    if (z.scale === 1) z.layer.style.removeProperty('transform');
+    else z.layer.style.transform = 'translate3d(' + z.x + 'px,' + z.y + 'px,0) scale(' + z.scale + ')';
+    const btn = state.lb.zoomBtn;
+    setTextIfChanged(btn, z.scale > 1 ? '等倍' : '拡大');
+    setAttrIfChanged(btn, 'aria-label', z.scale > 1 ? '画像を等倍に戻す' : '画像を2倍に拡大');
+    setAttrIfChanged(btn, 'aria-pressed', String(z.scale > 1));
+  });
+}
+
+function measureLightboxZoom(z) {
+  const r = state.lb.frame.getBoundingClientRect();
+  z.width = z.layer.offsetWidth;
+  z.height = z.layer.offsetHeight;
+  z.cx = r.left + r.width / 2;
+  z.cy = r.top + r.height / 2;
+}
+
+function toggleLightboxZoom(clientX, clientY) {
+  const z = activeLightboxZoom();
+  if (!z) return;
+  measureLightboxZoom(z);
+  const scale = z.scale > 1 ? 1 : 2;
+  const x = Number.isFinite(clientX) ? clientX - z.cx : 0;
+  const y = Number.isFinite(clientY) ? clientY - z.cy : 0;
+  z.gesture = null;
+  z.tap = null;
+  setLightboxZoom(z, scale, -x * (scale - 1), -y * (scale - 1));
+}
+
+function resetLightboxZoomOnResize() {
+  const z = activeLightboxZoom();
+  if (!z) return;
+  z.gesture = null;
+  z.tap = null;
+  measureLightboxZoom(z);
+  setLightboxZoom(z, 1, 0, 0);
+}
+
+function bindLightboxZoomGestures(frame) {
+  const targetAllowed = function(ev) {
+    const t = ev.target;
+    return !t || !t.closest || !t.closest('.lb-badge');
+  };
+  const distance = function(a,b) { return Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY); };
+  const beginPinch = function(z, touches) {
+    const a=touches[0],b=touches[1];
+    z.tap = null;
+    z.gesture = {kind:'pinch', distance:Math.max(1,distance(a,b)),scale:z.scale,x:z.x,y:z.y,
+      mx:(a.clientX+b.clientX)/2-z.cx,my:(a.clientY+b.clientY)/2-z.cy};
+  };
+  frame.addEventListener('touchstart', function(ev) {
+    const z = currentLightboxZoom();
+    if (!z || !targetAllowed(ev)) return;
+    if (z.ready) measureLightboxZoom(z);
+    if (ev.touches.length === 2) {
+      if (!z.ready) { z.gesture=null; z.tap=null; return; }
+      beginPinch(z,ev.touches);
+      if (ev.cancelable) ev.preventDefault();
+    } else if (ev.touches.length === 1) {
+      const t=ev.touches[0];
+      z.gesture={kind:'single',id:t.identifier,x:t.clientX,y:t.clientY,ox:z.x,oy:z.y,scale:z.scale,at:Date.now(),moved:false};
+    } else { z.gesture=null; z.tap=null; }
+  }, {passive:false});
+  frame.addEventListener('touchmove', function(ev) {
+    const z=currentLightboxZoom();
+    if (!z || !z.gesture) return;
+    const g=z.gesture;
+    if (ev.touches.length > 2) { z.gesture=null; z.tap=null; return; }
+    if (ev.touches.length === 2) {
+      if (!z.ready) { z.gesture=null; z.tap=null; return; }
+      if (g.kind !== 'pinch') beginPinch(z,ev.touches);
+      const pin=z.gesture,a=ev.touches[0],b=ev.touches[1];
+      const scale=Math.max(1,Math.min(4,pin.scale*distance(a,b)/pin.distance));
+      const ratio=scale/pin.scale;
+      const mx=(a.clientX+b.clientX)/2-z.cx,my=(a.clientY+b.clientY)/2-z.cy;
+      setLightboxZoom(z,scale,mx-(pin.mx-pin.x)*ratio,my-(pin.my-pin.y)*ratio);
+      if (ev.cancelable) ev.preventDefault();
+    } else if (ev.touches.length === 1 && g.kind === 'single') {
+      const t=ev.touches[0],dx=t.clientX-g.x,dy=t.clientY-g.y;
+      if (Math.hypot(dx,dy)>10) { g.moved=true; z.tap=null; }
+      if (g.scale>1) {
+        setLightboxZoom(z,g.scale,g.ox+dx,g.oy+dy);
+        if (ev.cancelable) ev.preventDefault();
+      }
+    }
+  }, {passive:false});
+  frame.addEventListener('touchend', function(ev) {
+    const z=currentLightboxZoom();
+    if (!z || !z.gesture) return;
+    const g=z.gesture;
+    if (g.kind==='pinch') {
+      // Do not turn the remaining finger after a pinch into a swipe.
+      if (!ev.touches.length) z.gesture=null;
+      if (ev.cancelable) ev.preventDefault();
+      return;
+    }
+    z.gesture=null;
+    const t=Array.from(ev.changedTouches||[]).find(function(v){return v.identifier===g.id;});
+    if (!t || ev.touches.length) return;
+    const dx=t.clientX-g.x,dy=t.clientY-g.y,dt=Date.now()-g.at;
+    if (g.scale===1 && z.scale===1 && dt<=900 && Math.abs(dx)>=48 && Math.abs(dx)>Math.abs(dy)*1.25) {
+      z.tap=null;
+      if (ev.cancelable) ev.preventDefault();
+      perfCount('lb.swipe');
+      moveLightbox(dx<0?1:-1);
+      return;
+    }
+    if (z.ready && !g.moved && dt<=300 && Math.hypot(dx,dy)<=10) {
+      const last=z.tap,now=Date.now();
+      if (last && now-last.at<=320 && Math.hypot(t.clientX-last.x,t.clientY-last.y)<=24) {
+        toggleLightboxZoom(t.clientX,t.clientY);
+      } else z.tap={at:now,x:t.clientX,y:t.clientY};
+      if (ev.cancelable) ev.preventDefault();
+    } else z.tap=null;
+  }, {passive:false});
+  frame.addEventListener('touchcancel', function() {
+    const z=state.lb.zoom;
+    if (z) { z.gesture=null; z.tap=null; }
+  }, {passive:true});
+  frame.addEventListener('dblclick', function(ev) {
+    if (!targetAllowed(ev) || !activeLightboxZoom()) return;
+    ev.preventDefault();
+    toggleLightboxZoom(ev.clientX,ev.clientY);
+  });
+}
+
 function buildLightboxList() {
-  const cards = Array.from(state.ui.grid.querySelectorAll('.card'))
-    .filter(function(card) { return !card.classList.contains('is-hidden') && !card.classList.contains('is-error'); });
-  state.lb.list = cards.map(function(card) { return state.items.byId.get(card.dataset.id); });
+  syncMediaOrder();
+  const list = [];
+  for (const card of state.ui.grid.querySelectorAll('.card')) {
+    if (card.classList.contains('is-hidden') || card.classList.contains('is-error')) continue;
+    list.push(state.items.byId.get(card.dataset.id));
+  }
+  state.lb.list = list;
 }
 
 function openLightboxById(id) {
@@ -5940,8 +6861,8 @@ function openLightboxById(id) {
   renderLightboxItem();
   state.lb.overlay.classList.add('open');
   state.lb.open = true;
-  updateLightboxChrome();
   requestAnimationFrame(function() {
+    if (state.ui.disposed || !state.lb.open) return;
     const target = state.lb.closeBtn || state.lb.overlay;
     try { target.focus({ preventScroll: true }); } catch (e) { try { target.focus(); } catch (e2) {} }
   });
@@ -6100,6 +7021,7 @@ function renderLightboxItem() {
   }
   state.lb.currentId = item.id;
   updateLightboxChrome();
+  resetLightboxZoom();
   const lbToken = resetLightboxLoad('switch');
   clearLightboxFrame();
   state.lb.badge.style.display = 'none';
@@ -6172,6 +7094,7 @@ function renderLightboxItem() {
     let videoFailTimer = 0;
     let videoFailCandidate = null;
     let videoSuccess = false;
+    let videoAborted = false;
     let noSourceTimer = 0;
     let fallbackPendingTimer = 0;
     const clearVideoFailTimer = function() {
@@ -6261,6 +7184,7 @@ function renderLightboxItem() {
         clearVideoFailTimer();
         clearNoSourceTimer();
         clearFallbackPendingTimer();
+        videoAborted = true;
         videoSuccess = true;
         videoFailCandidate = null;
         try { v.pause(); } catch (e) {}
@@ -6288,6 +7212,7 @@ function renderLightboxItem() {
     perfCount('lb.video.start');
     perfMarkOnce('lb.firstStart');
     requestAnimationFrame(function() {
+      if (videoAborted || !isLightboxTokenCurrent(token)) return;
       v.src = item.url;
       try { v.load(); } catch (e) {}
       clearNoSourceTimer();
@@ -6355,8 +7280,12 @@ function renderLightboxItem() {
     overlay.className = 'ph-load';
     overlay.textContent = 'LOADING';
     overlay.style.opacity = '0';
-    state.lb.frame.appendChild(img);
+    const zoomLayer = document.createElement('div');
+    zoomLayer.className = 'lb-zoom-layer';
+    zoomLayer.appendChild(img);
+    state.lb.frame.appendChild(zoomLayer);
     state.lb.frame.appendChild(overlay);
+    createLightboxZoom(zoomLayer, img, lbToken);
     perfCount('lb.image.start');
     perfMarkOnce('lb.firstStart');
     let retries = 0;
@@ -6434,6 +7363,13 @@ function renderLightboxItem() {
       if (state.lb.__token !== token) return;
       hideLbOverlay();
       img.style.opacity = '1';
+      if (state.lb.zoom && state.lb.zoom.token === token) {
+        state.lb.zoom.ready = true;
+        if (state.lb.zoomBtn) {
+          state.lb.zoomBtn.hidden = false;
+          if (state.lb.zoomBtn.parentElement) state.lb.zoomBtn.parentElement.classList.add('zoom-ready');
+        }
+      }
       perfCount('lb.image.reveal');
       perfMarkOnce('lb.firstReveal');
       queueRepaint(img);
@@ -6545,6 +7481,26 @@ function renderLightboxItem() {
   preloadLightboxNeighbors(lbToken);
 }
 
+const videoPreviewFrameCache = new WeakMap();
+function captureSmallVideoFrame(video) {
+  if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return '';
+  const src = video.currentSrc;
+  const cached = videoPreviewFrameCache.get(video);
+  if (cached && cached.src === src) return cached.data;
+  try {
+    const canvas = document.createElement('canvas');
+    const ratio = Math.min(1, 320 / video.videoWidth, 180 / video.videoHeight);
+    canvas.width = Math.max(1, Math.round(video.videoWidth * ratio));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * ratio));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const data = canvas.toDataURL('image/jpeg', 0.72);
+    videoPreviewFrameCache.set(video, {src:src,data:data});
+    return data;
+  } catch (e) { videoPreviewFrameCache.set(video, {src:src,data:''}); return ''; }
+}
+
 function renderVideoPoster(video, item, token) {
   const canvas = document.createElement('canvas');
   const badge = state.lb.badge;
@@ -6562,7 +7518,7 @@ function renderVideoPoster(video, item, token) {
     badge.style.display = 'block';
   };
   const grab = function() {
-    if (done) return;
+    if (done || !isCurrent()) return;
     if ((video.readyState || 0) <= 1) {
       fail();
       return;
@@ -6589,6 +7545,10 @@ function renderVideoPoster(video, item, token) {
         const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
         if (dataUrl) {
           video.setAttribute('poster', dataUrl);
+          if (isCurrent() && item.card && !item.__previewSucceeded && !item.__capturedPoster) {
+            item.__capturedPoster = captureSmallVideoFrame(video);
+            if (item.__capturedPoster) refreshCardPreview(item, item.card.querySelector('.thumb'));
+          }
           done = true;
           return;
         }
@@ -6608,6 +7568,7 @@ function renderVideoPoster(video, item, token) {
 function closeLightbox() {
   if (!state.lb.overlay) return;
   const fallbackInvoker = state.lb.invoker;
+  resetLightboxZoom();
   resetLightboxLoad('close');
   state.lb.overlay.classList.remove('open');
   state.lb.open = false;
@@ -6628,6 +7589,7 @@ function closeLightbox() {
     if (card) focusTarget = card.querySelector('.thumb') || card || focusTarget;
     if (card && typeof card.scrollIntoView === 'function') {
       requestAnimationFrame(function() {
+        if (state.ui.disposed || state.lb.open) return;
         try {
           card.scrollIntoView({ block: 'center', inline: 'nearest' });
           card.classList.add('is-current');
@@ -6639,11 +7601,13 @@ function closeLightbox() {
       });
     } else if (focusTarget && focusTarget.isConnected && typeof focusTarget.focus === 'function') {
       requestAnimationFrame(function() {
+        if (state.ui.disposed || state.lb.open) return;
         try { focusTarget.focus({ preventScroll: true }); } catch (e) { try { focusTarget.focus(); } catch (e2) {} }
       });
     }
   } else if (focusTarget && focusTarget.isConnected && typeof focusTarget.focus === 'function') {
     requestAnimationFrame(function() {
+        if (state.ui.disposed || state.lb.open) return;
       try { focusTarget.focus({ preventScroll: true }); } catch (e) { try { focusTarget.focus(); } catch (e2) {} }
     });
   }
@@ -6680,7 +7644,83 @@ function extractYoutubeIdFromUrl(raw) {
   return '';
 }
 
+// Additional providers: recognize only explicit video/player URL shapes.
+function isAdditionalVideoItem(item) {
+  return item && item.kind === 'embed' && /^(?:VIMEO|DM|TWITCH|NICO|BILI|FB)$/.test(item.embedType);
+}
+
+function getAdditionalVideoInfo(raw) {
+  let u;
+  try { u = new URL(raw, location.href); } catch (e) { return null; }
+  if (!/^https?:$/.test(u.protocol) || u.username || u.password) return null;
+  const host = u.hostname.toLowerCase(), path = u.pathname;
+  const q = u.searchParams;
+  const result = (type, openUrl, url) => ({type,openUrl,url,identity:openUrl});
+  let m,id,open,embed;
+  if (['vimeo.com','www.vimeo.com','player.vimeo.com'].includes(host)) {
+    m = (host === 'player.vimeo.com' ? /^\/video\/(\d+)\/?$/ : /^\/(\d+)(?:\/([a-f0-9]+))?\/?$/i).exec(path);
+    if (!m) return null;
+    id=m[1];const hash=m[2] || q.get('h') || '';
+    if (hash && !/^[a-f0-9]+$/i.test(hash)) return null;
+    open='https://vimeo.com/'+id+(hash?'/'+hash:'');
+    embed='https://player.vimeo.com/video/'+id+(hash?'?h='+hash:'');
+    return result('VIMEO',open,embed);
+  }
+  if (['dailymotion.com','www.dailymotion.com','dai.ly','geo.dailymotion.com'].includes(host)) {
+    m=(host==='dai.ly'? /^\/([a-z0-9]+)\/?$/i : /^\/(?:embed\/)?video\/([a-z0-9]+)(?:_[^/]+)?\/?$/i).exec(path);
+    id=m?m[1]:'';
+    if (host==='geo.dailymotion.com') id=/^\/player(?:\/[a-z0-9]+)?\.html$/i.test(path)?q.get('video')||'':'';
+    if (!/^[a-z0-9]+$/i.test(id)) return null;
+    open='https://www.dailymotion.com/video/'+id;
+    embed=host==='geo.dailymotion.com'?'https://geo.dailymotion.com'+path+'?video='+id:'https://geo.dailymotion.com/player.html?video='+id;
+    return result('DM',open,embed);
+  }
+  if (['twitch.tv','www.twitch.tv','m.twitch.tv','player.twitch.tv','clips.twitch.tv'].includes(host)) {
+    const parent=location.hostname;
+    if (!parent) return null;
+    m=/^\/videos\/(\d+)\/?$/.exec(path);
+    id=m?m[1]:'';
+    if (host==='player.twitch.tv') id=path==='/'?(q.get('video')||'').replace(/^v/,''):'';
+    if (/^\d+$/.test(id)) return result('TWITCH','https://www.twitch.tv/videos/'+id,'https://player.twitch.tv/?video=v'+id+'&parent='+encodeURIComponent(parent)+'&autoplay=false');
+    m=host==='clips.twitch.tv'?/^\/([a-z0-9_-]+)\/?$/i.exec(path):/^\/[a-z0-9_]+\/clip\/([a-z0-9_-]+)\/?$/i.exec(path);
+    id=host==='clips.twitch.tv'&&path==='/embed'?(q.get('clip')||''):(m?m[1]:'');
+    if (/^[a-z0-9_-]+$/i.test(id) && !/^(?:embed|directory|login)$/i.test(id)) return result('TWITCH','https://clips.twitch.tv/'+id,'https://clips.twitch.tv/embed?clip='+id+'&parent='+encodeURIComponent(parent)+'&autoplay=false');
+    return null;
+  }
+  if (['nicovideo.jp','www.nicovideo.jp','embed.nicovideo.jp','nico.ms'].includes(host)) {
+    m=(host==='nico.ms'? /^\/((?:sm|so|nm)?\d+)\/?$/i : /^\/watch\/((?:sm|so|nm)?\d+)(?:\/script)?\/?$/i).exec(path);
+    if (!m) return null;
+    id=m[1];return result('NICO','https://www.nicovideo.jp/watch/'+id,'https://embed.nicovideo.jp/watch/'+id);
+  }
+  if (['bilibili.com','www.bilibili.com','m.bilibili.com','player.bilibili.com'].includes(host)) {
+    m=/^\/video\/(BV[a-zA-Z0-9]+|av\d+)\/?$/.exec(path);
+    id=m?m[1]:'';
+    if (host==='player.bilibili.com' && path==='/player.html') id=q.get('bvid') || (q.get('aid')?'av'+q.get('aid'):'');
+    if (!/^(?:BV[a-zA-Z0-9]+|av\d+)$/.test(id)) return null;
+    const part=q.get('p')||q.get('page')||'1';
+    if (!/^\d+$/.test(part)) return null;
+    open='https://www.bilibili.com/video/'+id+'?p='+part;
+    embed='https://player.bilibili.com/player.html?'+(id.startsWith('BV')?'bvid='+id:'aid='+id.slice(2))+'&page='+part+'&autoplay=0';
+    return result('BILI',open,embed);
+  }
+  if (['facebook.com','www.facebook.com','m.facebook.com','web.facebook.com'].includes(host)) {
+    // Unwrap only Meta's video plugin, never arbitrary nested URLs.
+    if (path==='/plugins/video.php') {
+      try { u=new URL(q.get('href')||''); } catch(e) { return null; }
+      if (!/^https?:$/.test(u.protocol)||u.username||u.password||!['facebook.com','www.facebook.com','m.facebook.com','web.facebook.com'].includes(u.hostname.toLowerCase())) return null;
+    }
+    m=/^\/(?:[^/]+\/)?videos\/(\d+)\/?$/.exec(u.pathname)||/^\/reel\/(\d+)\/?$/.exec(u.pathname);
+    id=m?m[1]:((u.pathname==='/watch'||u.pathname==='/watch/')?u.searchParams.get('v')||'':'');
+    if (!/^\d+$/.test(id)) return null;
+    open=u.pathname.startsWith('/reel/')?'https://www.facebook.com/reel/'+id+'/':'https://www.facebook.com/watch/?v='+id;
+    return result('FB',open,'https://www.facebook.com/plugins/video.php?href='+encodeURIComponent(open)+'&autoplay=false');
+  }
+  return null;
+}
+
 function getEmbedInfo(url) {
+  const extra = getAdditionalVideoInfo(url);
+  if (extra) return extra;
   const x = /https?:\/\/(?:x\.com|twitter\.com|mobile\.twitter\.com)\/(?:[^/?#]+\/status\/|i\/web\/status\/|i\/status\/)(\d+)/i.exec(url);
   if (x) return { type: 'X', url: 'https://platform.twitter.com/embed/Tweet.html?id=' + x[1] };
   const ig = /https?:\/\/www\.instagram\.com\/(p|reel|tv)\/([^/?#]+)/i.exec(url);
@@ -6705,21 +7745,15 @@ function getEmbedInfo(url) {
       openUrl: url
     };
   }
-  const im = /https?:\/\/(?:www\.)?imgur\.com\/(a|gallery)\/([^/?#]+)/i.exec(url);
-  if (im) return { type: 'IMGUR', url: 'https://imgur.com/' + im[1] + '/' + im[2] + '/embed' };
-  const im2 = /https?:\/\/(?:www\.)?imgur\.com\/([^/?#]+)/i.exec(url);
-  if (im2) {
-    const clean = (im2[1] || '').replace(/\.(?:jpe?g|png|gif|webp|bmp|avif)$/i, '');
-    if (clean) {
-      const openUrl = 'https://imgur.com/' + clean;
-      return { type: 'IMGUR', url: openUrl + '/embed', openUrl: openUrl };
-    }
-  }
+  const im = getImgurPost(url);
+  if (im) return {type:'IMGUR',url:im.embedUrl,openUrl:im.openUrl};
   return null;
 }
 
 function getEmbedInfoFromIframe(srcAbs) {
   if (!srcAbs) return null;
+  const extra = getAdditionalVideoInfo(srcAbs);
+  if (extra) return {type:extra.type,embedUrl:extra.url,openUrl:extra.openUrl};
   let u;
   try { u = new URL(srcAbs, location.href); } catch (e) { return null; }
   const host = u.hostname.toLowerCase();
@@ -6752,14 +7786,8 @@ function getEmbedInfoFromIframe(srcAbs) {
       };
     }
   }
-  if (host.endsWith('imgur.com') && /\/embed\/?$/i.test(path)) {
-    const open = srcAbs.replace(/\/embed\/?$/i, '');
-    return {
-      type: 'IMGUR',
-      embedUrl: srcAbs,
-      openUrl: open
-    };
-  }
+  const im = getImgurPost(srcAbs);
+  if (im) return {type:'IMGUR',embedUrl:im.embedUrl,openUrl:im.openUrl};
   if (host === 'www.tiktok.com' || host === 'tiktok.com') {
     const ttVideo = /^\/@([^/?#]+)\/video\/(\d+)(?:[/?#]|$)/i.exec(path);
     if (ttVideo) {
@@ -6786,11 +7814,8 @@ function getEmbedInfoFromIframe(srcAbs) {
 
 function getImgurEmbedFromBlockquote(el) {
   if (!el) return null;
-  const dataId = (el.getAttribute('data-id') || '').trim();
-  if (!dataId) return null;
-  const clean = dataId.replace(/^\//, '');
-  const openUrl = 'https://imgur.com/' + clean;
-  return { openUrl: openUrl, embedUrl: openUrl + '/embed' };
+  const dataId = (el.getAttribute('data-id') || '').trim().replace(/^\//, '');
+  return getImgurPost('https://imgur.com/' + dataId);
 }
 
 function getYoutubeIdFromItem(item) {
@@ -6877,30 +7902,49 @@ function getTikTokVideoInfoFromItem(item) {
   return findEmbedInfoFromItem(item, extractTikTokVideoInfo);
 }
 
-function extractImgurInfo(raw) {
-  if (!raw) return null;
+function getImgurDirectMedia(raw) {
+  if (!raw || !/imgur\.com/i.test(raw)) return null;
   let u;
-  try { u = new URL(raw, location.href); } catch (e) { return null; }
-  const host = (u.hostname || '').toLowerCase();
-  const path = u.pathname || '';
-  if (host === 'i.imgur.com' || host.endsWith('.i.imgur.com')) {
-    const direct = /^\/([^/?#]+?)(?:\.(jpe?g|png|gif|webp|avif|bmp|gifv|mp4))?(?:[/?#]|$)/i.exec(path);
-    if (direct && /^[a-z0-9]+$/i.test(direct[1] || '')) {
-      return { kind: 'image', id: direct[1] || '', ext: String(direct[2] || '').toLowerCase() };
-    }
-    return null;
+  try { u=new URL(raw,location.href); } catch(e) { return null; }
+  if (!/^https?:$/.test(u.protocol) || u.username || u.password ||
+      !['i.imgur.com','imgur.com','www.imgur.com','m.imgur.com'].includes(u.hostname.toLowerCase())) return null;
+  const m=/^\/([A-Za-z0-9]+)\.(jpe?g|png|gif|webp|avif|bmp|gifv|mp4|webm)$/i.exec(u.pathname);
+  if (!m) return null;
+  const ext=m[2].toLowerCase();
+  const video=/^(gifv|mp4|webm)$/.test(ext);
+  u.hostname='i.imgur.com';
+  if (ext==='gifv') u.pathname='/'+m[1]+'.mp4';
+  u.hash='';
+  return {kind:'image',id:m[1],ext:ext,video:video,url:u.href};
+}
+
+function getImgurPost(raw) {
+  if (!raw || !/imgur\.com/i.test(raw)) return null;
+  let u;
+  try { u=new URL(raw,location.href); } catch(e) { return null; }
+  if (!/^https?:$/.test(u.protocol) || u.username || u.password ||
+      !['imgur.com','www.imgur.com','m.imgur.com'].includes(u.hostname.toLowerCase())) return null;
+  if (getImgurDirectMedia(raw)) return null;
+  const path=u.pathname.replace(/\/+$/,'').replace(/\/embed$/i,'');
+  let m=/^\/(a|gallery)\/([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)$/.exec(path);
+  let kind,id,route;
+  if (m) {
+    kind=m[1]==='a'?'album':'gallery';
+    // A terminal word may look exactly like an ID. Preserve the observed
+    // route unless the provider supplied a separate, explicit ID.
+    id=m[2];
+    route='/'+m[1]+'/'+id;
+  } else {
+    m=/^\/(?:embed\/)?([A-Za-z0-9]+)$/.exec(path);
+    if (!m || /^(?:a|t|r|user|about|topic|terms|login|search|upload|signin|privacy|account|gallery|explore|register|remix|download|random|submit|support|help|blog|tags|apps|jobs|rules|tos|contact|embed|memegen|settings)$/i.test(m[1])) return null;
+    kind='image';id=m[1];route='/'+id;
   }
-  if (host !== 'imgur.com' && host !== 'www.imgur.com' && !host.endsWith('.imgur.com')) return null;
-  const album = /^\/a\/([^/?#]+)(?:[/?#]|$)/i.exec(path);
-  if (album) return { kind: 'album', id: album[1] || '' };
-  const gallery = /^\/gallery\/([^/?#]+)(?:[/?#]|$)/i.exec(path);
-  if (gallery) return { kind: 'gallery', id: gallery[1] || '' };
-  const single = /^\/([^/?#]+?)(?:\.(jpe?g|png|gif|webp|avif|bmp|gifv|mp4))?(?:[/?#]|$)/i.exec(path);
-  if (!single || !single[1]) return null;
-  const seg = single[1];
-  if (!/^[a-z0-9]+$/i.test(seg)) return null;
-  if (/^(?:a|gallery|t|topic|r|user|account|signin|register|remix|download)$/i.test(seg)) return null;
-  return { kind: 'image', id: seg, ext: String(single[2] || '').toLowerCase() };
+  const openUrl='https://imgur.com'+route;
+  return {kind,id,openUrl,embedUrl:openUrl+'/embed'};
+}
+
+function extractImgurInfo(raw) {
+  return getImgurDirectMedia(raw) || getImgurPost(raw);
 }
 
 function getImgurInfoFromItem(item) {
@@ -6923,44 +7967,22 @@ function getYoutubeThumbUrls(item) {
   const id = getYoutubeIdFromItem(item);
   if (!id) return [];
   return uniqueThumbUrls([
-    'https://i.ytimg.com/vi/' + id + '/maxresdefault.jpg',
-    'https://i.ytimg.com/vi/' + id + '/sddefault.jpg',
     'https://i.ytimg.com/vi/' + id + '/hqdefault.jpg',
+    'https://i.ytimg.com/vi/' + id + '/sddefault.jpg',
+    'https://i.ytimg.com/vi/' + id + '/maxresdefault.jpg',
     'https://i.ytimg.com/vi/' + id + '/mqdefault.jpg',
     'https://i.ytimg.com/vi/' + id + '/default.jpg'
   ]);
 }
 
-function getYoutubeThumbUrl(item) {
-  const urls = getYoutubeThumbUrls(item);
-  return urls[0] || '';
-}
-
 function getImgurThumbUrls(item) {
   const info = getImgurInfoFromItem(item);
   if (!info || info.kind !== 'image' || !info.id) return [];
-  const extList = [];
-  const addExt = function(ext) {
-    const clean = String(ext || '').toLowerCase();
-    if (!clean || extList.indexOf(clean) >= 0) return;
-    if (!/^(?:jpe?g|png|gif|webp|avif|bmp)$/i.test(clean)) return;
-    extList.push(clean === 'jpeg' ? 'jpg' : clean);
-  };
-  addExt(info.ext || '');
-  addExt('jpg');
-  addExt('png');
-  addExt('webp');
-  const urls = [];
-  extList.forEach(function(ext) {
-    urls.push('https://i.imgur.com/' + info.id + 'l.' + ext);
-    urls.push('https://i.imgur.com/' + info.id + 'm.' + ext);
-  });
+  const root = 'https://i.imgur.com/' + info.id;
+  const urls = [root+'l.jpg', root+'m.jpg',root+'.jpg'];
+  if (info.ext && /^(?:png|gif|webp|avif|bmp)$/i.test(info.ext)) urls.push(root+'.'+info.ext);
+  if (!info.ext) urls.push(root+'l.png',root+'l.webp');
   return uniqueThumbUrls(urls);
-}
-
-function getImgurThumbUrl(item) {
-  const urls = getImgurThumbUrls(item);
-  return urls[0] || '';
 }
 
 function getEmbedDetailLines(item) {
@@ -6994,6 +8016,8 @@ function getEmbedDetailLines(item) {
     if (id) return ['YT video', id];
     return ['YT'];
   }
+  const extra = getAdditionalVideoInfo(item.openUrl);
+  if (extra) { const badge=getMediaBadgeInfo(item); return [badge.text,'動画']; }
   return [];
 }
 
@@ -7017,14 +8041,10 @@ function getEmbedMetaLabel(item) {
 function getEmbedThumbUrls(item) {
   if (!item || item.kind !== 'embed') return [];
   const t = (item.embedType || '').toUpperCase();
-  if (t === 'YT') return getYoutubeThumbUrls(item);
-  if (t === 'IMGUR') return getImgurThumbUrls(item);
-  return [];
-}
-
-function getEmbedThumbUrl(item) {
-  const urls = getEmbedThumbUrls(item);
-  return urls[0] || '';
+  const observed = item.previewUrls || [];
+  if (t === 'YT') return uniqueThumbUrls(observed.concat(getYoutubeThumbUrls(item)));
+  if (t === 'IMGUR') return uniqueThumbUrls(observed.concat(getImgurThumbUrls(item)));
+  return uniqueThumbUrls(observed);
 }
 
 function applyEmbedIframeAttrs(iframe, item) {
@@ -7038,6 +8058,10 @@ function applyEmbedIframeAttrs(iframe, item) {
     iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups');
   } else if (item.embedType === 'TT') {
     iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups');
+  } else if ((getAdditionalVideoInfo(item.embedUrl) || (item.embedType === 'IMGUR' && getImgurPost(item.embedUrl))) && !isSameOriginUrl(item.embedUrl)) {
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-presentation');
+    iframe.setAttribute('allow', 'fullscreen; picture-in-picture; encrypted-media');
+    iframe.setAttribute('allowfullscreen','true');
   } else {
     iframe.setAttribute('sandbox', 'allow-scripts allow-popups');
   }
@@ -7073,10 +8097,18 @@ function buildEmbedInCard(card, item) {
 
 /* [14] perf */
 function queueRender(item) {
+  if (state.ui.disposed) return;
   state.items.renderQueue.push(item);
-  if (state.items.renderScheduled) return;
+  scheduleRender();
+}
+
+function scheduleRender() {
+  if (state.ui.disposed || state.items.renderScheduled) return;
   state.items.renderScheduled = true;
-  requestAnimationFrame(flushRender);
+  state.items.renderRaf = requestAnimationFrame(function() {
+    state.items.renderRaf = 0;
+    flushRender();
+  });
 }
 
 function renderQueueLength() {
@@ -7108,7 +8140,7 @@ function compactRenderQueue() {
 }
 
 function scheduleApplyFilterSort(reason) {
-  if (state.items.filterSortTimer) return;
+  if (state.ui.disposed || state.items.filterSortTimer) return;
   state.items.filterSortTimer = setTimeout(function() {
     state.items.filterSortTimer = 0;
     applyFilterSort();
@@ -7116,6 +8148,7 @@ function scheduleApplyFilterSort(reason) {
 }
 
 function flushRender() {
+  if (state.ui.disposed) return;
   const renderStartedAt = perfStart('render.flush');
   perfCount('render.flush');
   state.items.renderScheduled = false;
@@ -7132,7 +8165,11 @@ function flushRender() {
     }
   }
   compactRenderQueue();
-  state.ui.grid.appendChild(frag);
+  if (newCards.length) {
+    state.ui.grid.appendChild(frag);
+    state.items.orderDirty=true;
+    syncMediaOrder();
+  }
   perfCount('render.items', newCards.length);
   if (newCards.length) perfMarkOnce('card.firstAppended');
   let scanRequested = false;
@@ -7154,7 +8191,7 @@ function flushRender() {
     state.log.push('render', 'items=' + state.items.list.length + ' visible=' + getVisibleCount() + ' error=' + state.items.errorCount);
   }
   if (renderQueueLength()) {
-    requestAnimationFrame(flushRender);
+    scheduleRender();
   } else {
     if (state.items.filterSortTimer) {
       clearTimeout(state.items.filterSortTimer);
@@ -7282,15 +8319,16 @@ function getAutoHiddenReasonCode(it) {
   return 'autoHidden';
 }
 
-function getHideReasonCode(it) {
+function getHideReasonCode(it, ignoreCardClass) {
   if (!it) return '';
   if (!passesFilter(it)) return 'filter';
+  if (isSourceSuppressed(it)) return 'origHidden';
   if (it.__hashDup) return 'dup';
   if (it.__failed) return 'failed';
   if (state.cfg.hiddenHide && it.__allHidden) return 'origHidden';
   if (state.cfg.hiddenHide && it.__autoHidden) return 'auto:' + getAutoHiddenReasonCode(it);
   if (state.cfg.noiseHide && it.__isNoise) return 'noise:' + getNoiseReasonCode(it);
-  if (it.card && it.card.classList.contains('is-hidden')) return 'cardHidden';
+  if (!ignoreCardClass && it.card && it.card.classList.contains('is-hidden')) return 'cardHidden';
   return '';
 }
 
@@ -7468,26 +8506,26 @@ function getVisibleCount() {
 
 function getVisibleItems(limit) {
   const out = [];
-  state.items.list.forEach(function(it) {
-    if (out.length >= limit) return;
-    if (!isItemVisible(it)) return;
+  for (const it of state.items.list) {
+    if (out.length >= limit) break;
+    if (!isItemVisible(it)) continue;
     out.push(getItemLogUrl(it));
-  });
+  }
   return out;
 }
 
 function getFailedItems(limit) {
   const out = [];
-  state.items.list.forEach(function(it) {
-    if (out.length >= limit) return;
-    if (!it.__failed) return;
+  for (const it of state.items.list) {
+    if (out.length >= limit) break;
+    if (!it.__failed) continue;
     out.push(it.url || it.openUrl || it.rawUrl || '');
-  });
+  }
   return out.filter(Boolean);
 }
 
 function updateInfo() {
-  if (!state.ui.info) return;
+  if (state.ui.disposed || !state.ui.info) return;
   if (state.ui.infoTimer) {
     state.ui.__infoDirty = true;
     return;
@@ -7511,7 +8549,7 @@ function updateInfo() {
     const reasonText = formatHideReasonCounts(stats.counts, 4);
     const text = `表示 ${visible} / 全体 ${state.items.list.length} / エラー ${state.items.errorCount}${reasonText ? ' / 非表示 ' + reasonText : ''}`;
     state.ui.infoPendingText = '';
-    if (text !== state.ui.infoLastText) {
+    if (text !== state.ui.info.textContent) {
       state.ui.info.textContent = text;
       const at = Date.now();
       state.ui.infoLastAt = at;
@@ -7520,8 +8558,25 @@ function updateInfo() {
   }, wait);
 }
 
+function commitProgress(text, phase) {
+  if (state.ui.disposed || !state.ui.progress) return;
+  setTextIfChanged(state.ui.progress, text);
+  const at = Date.now();
+  state.ui.progressLast = at;
+  state.ui.progressLastAt = at;
+  state.ui.progressLastText = text;
+  state.ui.progressLastPhase = phase || '';
+  if (state.ui.progressTimer) clearTimeout(state.ui.progressTimer);
+  state.ui.progressTimer = 0;
+  if (text !== 'idle') state.ui.progressTimer = setTimeout(function() {
+    state.ui.progressTimer = 0;
+    if (state.ui.disposed || !state.ui.progress) return;
+    setTextIfChanged(state.ui.progress, 'idle');
+  }, state.cfg.progressStaleMs);
+}
+
 function updateProgress(phase, token) {
-  if (!state.ui.progress) return;
+  if (state.ui.disposed || !state.ui.progress) return;
   const now = Date.now();
   const minGap = 100;
   const t = token ? String(token) : '';
@@ -7541,12 +8596,7 @@ function updateProgress(phase, token) {
       state.ui.progressPendingText = '';
       state.ui.progressPendingPhase = '';
       if (!pendingText) return;
-      state.ui.progress.textContent = pendingText;
-      const at = Date.now();
-      state.ui.progressLast = at;
-      state.ui.progressLastAt = at;
-      state.ui.progressLastText = pendingText;
-      state.ui.progressLastPhase = pendingPhase || '';
+      commitProgress(pendingText, pendingPhase);
     }, minGap - elapsed);
     return;
   }
@@ -7556,15 +8606,11 @@ function updateProgress(phase, token) {
   }
   state.ui.progressPendingText = '';
   state.ui.progressPendingPhase = '';
-  state.ui.progress.textContent = text;
-  state.ui.progressLast = now;
-  state.ui.progressLastAt = now;
-  state.ui.progressLastText = text;
-  state.ui.progressLastPhase = phase || '';
+  commitProgress(text, phase);
 }
 
 function setInfoTemp(message, ms) {
-  if (!state.ui.info) return;
+  if (state.ui.disposed || !state.ui.info) return;
   if (state.ui.infoThrottleTimer) {
     clearTimeout(state.ui.infoThrottleTimer);
     state.ui.infoThrottleTimer = 0;
@@ -7581,10 +8627,11 @@ function setInfoTemp(message, ms) {
 function flashLogButton() {
   const btn = state.ui.logBtn;
   if (!btn) return;
-  const base = btn.textContent;
-  btn.textContent = 'コピー済';
-  setTimeout(function() {
-    if (btn) btn.textContent = base;
+  if (state.ui.logFlashTimer) clearTimeout(state.ui.logFlashTimer);
+  setTextIfChanged(btn, 'コピー済');
+  state.ui.logFlashTimer = setTimeout(function() {
+    state.ui.logFlashTimer = 0;
+    if (!state.ui.disposed) setTextIfChanged(btn, 'ログコピー');
   }, 800);
 }
 
@@ -7682,6 +8729,7 @@ function allowOpen(url) {
     const abs = u.toString();
     if (sameSite(abs)) return true;
     if (isImageUrl(abs) || isVideoUrl(abs)) return true;
+    if (getAdditionalVideoInfo(abs)) return true;
     const host = u.hostname.toLowerCase();
     const allow = [
       'x.com',
@@ -7732,9 +8780,13 @@ function openExternal(url, from) {
   return false;
 }
 
-function safeCompletion(status, detail) {
+function publishPayloadCompletion(status, detail) {
+  // Loader-S owns the Shortcuts completion callback. Payload completion
+  // is a separate, once-per-run phase notification.
   try {
-    if (typeof window.completion === 'function') window.completion(status, detail);
+    window.dispatchEvent(new CustomEvent('nf:img-view-complete', {
+      detail: {status:status, detail:detail, rev:SCRIPT_REV, runToken:RUN_TOKEN}
+    }));
   } catch (e) {}
 }
 
@@ -7843,7 +8895,8 @@ function isSameImageVariantUrl(a, b) {
 }
 
 function getDisplayUrl(item) {
-  if (!item || item.kind !== 'img') return item ? item.url : '';
+  if (!item || item.kind !== 'img') return item ? (item.requestUrl || item.url) : '';
+  if (item.requestUrl) return item.__resolvedRequestFor === item.requestUrl && item.__resolvedRequestUrl ? item.__resolvedRequestUrl : item.requestUrl;
   if (item.openUrl && isProbablyImageUrl(item.openUrl)) {
     if (item.url && isSameImageVariantUrl(item.openUrl, item.url)) return item.url;
     return item.openUrl;
@@ -8182,6 +9235,8 @@ function runDomRescanOnce(reason) {
   } else {
     addItems(extractFromDocument(document, 'dom', location.href));
   }
+  state.items.orderDirty=true;
+  scheduleApplyFilterSort('source-order');
   const after = state.items.list.length;
   const added = after - before;
   if (state.log && state.log.push) {
@@ -8208,19 +9263,32 @@ function setupMutationObserver() {
     return '';
   };
   const isSelfMutationNode = function(node) {
-    if (!node || node.nodeType !== 1) return false;
+    const ownedRoot = state.ui.root;
+    if (!node || !ownedRoot) return false;
     try {
-      const ownedRoot = document.getElementById(ROOT_ID);
-      if (!ownedRoot) return false;
+      if (node === ownedRoot || ownedRoot.contains(node)) return true;
+      // A document observer normally cannot see into Shadow DOM; retain host handling.
       let current = node;
-      const seen = new Set();
-      while (current && !seen.has(current)) {
+      while (current) {
         if (current === ownedRoot) return true;
-        seen.add(current);
         current = current.parentNode || current.host || null;
       }
     } catch (e) {}
     return false;
+  };
+  const isSelfMutationRecord = function(record) {
+    if (isSelfMutationNode(record.target)) return true;
+    if (record.type !== 'childList') return false;
+    const added = record.addedNodes || [];
+    const removed = record.removedNodes || [];
+    if (!added.length && !removed.length) return false;
+    for (let i = 0; i < added.length; i += 1) {
+      if (!isSelfMutationNode(added[i])) return false;
+    }
+    for (let i = 0; i < removed.length; i += 1) {
+      if (!isSelfMutationNode(removed[i])) return false;
+    }
+    return true;
   };
   const findReasonFromNode = function(node) {
     if (!node || node.nodeType !== 1) return '';
@@ -8236,10 +9304,18 @@ function setupMutationObserver() {
   };
   try {
     state.mo.obs = new MutationObserver(function(mutations) {
-      if (!mutations || !mutations.length) return;
+      if (state.ui.disposed || !mutations || !mutations.length) return;
       const moCallbackStartedAt = perfStart('mo.callback');
       perfCount('mo.callback');
       perfCount('mo.rawRecords', mutations.length);
+      // Filter owned records before applying the legacy external-burst threshold.
+      const external = mutations.filter(function(record) { return !isSelfMutationRecord(record); });
+      perfCount('mo.selfRecords', mutations.length - external.length);
+      if (!external.length) {
+        perfEnd('mo.callback', moCallbackStartedAt);
+        return;
+      }
+      mutations = external;
       const maxMut = state.cfg.moMaxMutations || 0;
       if (!state.cfg.moBatchRoots) {
         if (maxMut && mutations.length > maxMut) {
@@ -8277,7 +9353,7 @@ function setupMutationObserver() {
                 if (oldValue === newValue) continue;
               }
               if (isSelfMutationNode(t)) continue;
-              const tr = reasonFromTag(t.tagName);
+              const tr = reasonFromTag(t.tagName) || (/^(class|style|hidden)$/.test(name) && t.querySelector && t.querySelector('img') ? 'attr-image-ancestor' : '');
               if (tr && name) {
                 relevantCount += 1;
                 if (!reason) reason = 'attr-' + name;
@@ -8326,7 +9402,7 @@ function setupMutationObserver() {
               if (oldValue === newValue) continue;
             }
             if (isSelfMutationNode(t)) continue;
-            const tr = reasonFromTag(t.tagName);
+            const tr = reasonFromTag(t.tagName) || (/^(class|style|hidden)$/.test(name) && t.querySelector && t.querySelector('img') ? 'attr-image-ancestor' : '');
             if (tr && name) {
               relevantCount += 1;
               if (!reason) reason = 'attr-' + name;
@@ -8378,6 +9454,7 @@ async function main() {
     createShell();
     mountShell(0);
     (function waitForUiLock(tries) {
+      if (state.ui.disposed || window[FMP_RUNTIME_KEY] !== state.runtime) return;
       if (isUiVisible(state)) {
         perfMarkOnce('shell.visible');
         lockPage(state);
@@ -8419,13 +9496,12 @@ async function main() {
       ? collectCrawlBootstrap(document, location.href)
       : null;
     if (crawlBootstrap) state.crawl.bootstrap = crawlBootstrap;
-    const bodyLinks = crawlBootstrap
-      ? crawlBootstrap.bodySameOriginCount
-      : countBodySameOriginLinks(document, location.href);
+    const linkDetails = {};
     const imgCount = countImageCandidates();
     const linkCandidates = crawlBootstrap
       ? crawlBootstrap.links
-      : collectCrawlLinksFromDocument(document, location.href);
+      : collectCrawlLinksFromDocument(document, location.href, linkDetails);
+    const bodyLinks = crawlBootstrap ? crawlBootstrap.bodySameOriginCount : (linkDetails.bodySameOriginCount || 0);
     const pagerPlan = crawlBootstrap
       ? crawlBootstrap.pagerPlan
       : buildPagerPlan(location.href, document);
