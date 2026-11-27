@@ -13,7 +13,7 @@ javascript:(function(){
  * Reuse responsive class decisions within each synchronous CSS-rule pass.
  */
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '3.0.7';
+const SCRIPT_REV = '3.0.9';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 const RUN_TOKEN = SCRIPT_NAME + ':' + SCRIPT_REV + ':' + Date.now() + ':' + Math.random();
 
@@ -1096,8 +1096,17 @@ function hasExcludedWord(u) {
     /(?:^|[\/_-])apple-touch-icon(?:[\/_\-.]|$)/i.test(path);
 }
 
+function isWikiFilePage(u) {
+  if(!u || !/\/wiki\//i.test(String(u)))return false;
+  try{
+    const x=new URL(u,location.href);
+    return (/(?:^|\.)wikipedia\.org$/i.test(x.hostname)||x.hostname==='commons.wikimedia.org') &&
+      /^\/wiki\/(?:File|Image|ファイル|画像):/i.test(decodeURIComponent(x.pathname));
+  }catch(e){return false;}
+}
+
 function isImageResourceLink(u) {
-  if (!u) return false;
+  if (!u || isWikiFilePage(u)) return false;
   try {
     const p = new URL(String(u), location.href);
     return /\.(?:png|jpe?g|gif|webp|avif|bmp|svg|ico)$/i.test(p.pathname) || isPbsMediaImageUrl(u);
@@ -1125,7 +1134,7 @@ function isPbsMediaImageUrl(u) {
 }
 
 function isDirectImageUrl(u) {
-  return isImageUrl(u) || isPbsMediaImageUrl(u);
+  return !isWikiFilePage(u) && (isImageUrl(u) || isPbsMediaImageUrl(u));
 }
 
 function isImgTagCandidateUrl(u) {
@@ -1359,8 +1368,30 @@ function sameDeclaredRendition(a,b) {
   if (!a || !b || a===b) return false;
   try {
     const u=new URL(a,location.href),v=new URL(b,location.href);
-    if (u.origin!==v.origin || !/^https?:$/.test(u.protocol)) return false;
-    const shape = p=>p.replace(/-\d{2,4}x\d{2,4}(?=\.[a-z0-9]+$)/i,'').replace(/@2x(?=\.[a-z0-9]+$)/i,'');
+    if (!/^https?:$/.test(u.protocol) || !/^https?:$/.test(v.protocol)) return false;
+    const wikiShape=x=>{
+      if(!['thumb.wikimedia.org','upload.wikimedia.org'].includes(x.hostname))return '';
+      const m=/^(\/wikipedia\/[^/]+)\/thumb\/(.+)\/\d+px-([^/]+)$/.exec(x.pathname);
+      if(m){
+        const name=m[2].split('/').pop();
+        if(m[3]!==name && m[3]!==name+'.png')return '';
+        return m[1]+'/'+m[2];
+      }
+      if(x.hostname==='upload.wikimedia.org' && /^\/wikipedia\/[^/]+\/[a-f0-9]\/[a-f0-9]{2}\/.+$/i.test(x.pathname))return x.pathname;
+      return '';
+    };
+    const w1=wikiShape(u),w2=wikiShape(v);
+    if(w1 && w1===w2){
+      const query=x=>{const p=new URLSearchParams(x.search);for(const k of ['utm_source','utm_campaign','utm_content'])p.delete(k);return p.toString();};
+      if(query(u)===query(v))return true;
+    }
+    if (u.origin!==v.origin) return false;
+    const shape = p=>{
+      p=p.replace(/-\d{2,4}x\d{2,4}(?=\.[a-z0-9]+$)/i,'').replace(/@2x(?=\.[a-z0-9]+$)/i,'');
+      if(u.hostname==='i.gzn.jp')p=p.replace(/_m(?=\.[a-z0-9]+$)/i,'');
+      if(u.hostname==='webcg.ismcdn.jp')p=p.replace(/^(\/mwimgs\/[^/]+\/[^/]+)\/(?:-|\d+wm)\//,'$1/-/');
+      return p;
+    };
     if (shape(u.pathname)!==shape(v.pathname)) return false;
     const sizeOnly = x => {
       const p=new URLSearchParams(x.search);
@@ -1663,7 +1694,7 @@ function inBodyScope(el, scopePass) {
 // Exclude secondary content by semantic region, not image dimensions.
 const SECONDARY_CONTENT=/^(?:navigation|footer|breadcrumb|related|recommend(?:ed|ation|ations)?|ranking|popular|pickup|sidebar|widget|advert(?:isement|ising)?|ads?|sponsored|promo(?:tion)?|carouselads)$/i;
 function inSecondaryContent(el) {
-  for(let n=el;n && n.nodeType===1;n=n.parentElement){
+  for(let n=el;n && n.nodeType===1 && !/^(HTML|BODY)$/.test(n.tagName);n=n.parentElement){
     const words=String((n.getAttribute('class')||'')+' '+(n.id||'')).replace(/([a-z0-9])([A-Z])/g,'$1 $2').split(/[^a-zA-Z0-9]+/);
     if(words.some(v=>SECONDARY_CONTENT.test(v)))return true;
     if(n.matches('.menuInner,.globalMenu,.siteMenu,.relativeContents,[role="navigation"],[role="complementary"]'))return true;
@@ -1680,7 +1711,41 @@ function inAvoidScope(el) {
   if (!el || !el.closest) return false;
   const sel = state.cfg.__avoidSelector || '';
   if (!sel) return false;
-  return !!el.closest(sel) || inSecondaryContent(el);
+  const region=el.closest(sel);
+  // Document-wide classes can describe a page type, not an excluded region.
+  return !!(region && !/^(HTML|BODY)$/.test(region.tagName)) || inSecondaryContent(el);
+}
+
+// Explicit image-file HTML viewer. Require the observed image path to
+// correspond to the named file, not just a generic /img/ or gallery URL.
+// No synthesized image URL or cross-origin HTML fetch.
+function wrappedImagePageKey(page, image, exact) {
+  if(!page || !image)return '';
+  try{
+    const u=new URL(page,location.href),v=new URL(image,u.href);
+    if(!/^https?:$/.test(u.protocol)||!/^https?:$/.test(v.protocol)||u.username||u.password||v.username||v.password)return '';
+    if(u.search || v.search)return '';
+    const m=/^(.*\/)([^/]+\.(?:jpe?g|png|webp|avif|gif|bmp))\.html?$/i.exec(u.pathname);
+    if(!m)return '';
+    const slash=v.pathname.lastIndexOf('/');
+    const dir=v.pathname.slice(0,slash+1);
+    if(dir!==m[1] && dir!==m[1].replace(/html\/$/i,''))return '';
+    const file=v.pathname.slice(slash+1);
+    const stem=x=>x.replace(/(?:_[lsmot]|-\d{2,4}x\d{2,4})(?=\.[a-z0-9]+$)/i,'');
+    if(file!==m[2] && (exact || stem(file)!==stem(m[2])))return '';
+    u.hash='';
+    return u.href;
+  }catch(e){return '';}
+}
+
+function wrappedImageSlot(img,page,base,url) {
+  if(!img || img.tagName!=='IMG')return '';
+  const a=img.closest('a[href]');
+  if(!a || a.querySelectorAll('img').length!==1 || String(a.textContent||'').trim())return '';
+  const href=resolveMediaReference(a.getAttribute('href'),base);
+  if(!isSameOriginUrl(href,page))return '';
+  const src=url || resolveMediaReference(img.currentSrc||img.getAttribute('data-original')||img.getAttribute('data-src')||img.getAttribute('src'),base);
+  return wrappedImagePageKey(href,src,false);
 }
 
 function contentLinkKind(a,page,base) {
@@ -1692,7 +1757,8 @@ function contentLinkKind(a,page,base) {
   let u,v;
   try{u=new URL(url);v=new URL(page,location.href);}catch(e){return 'ordinary';}
   if(u.origin+u.pathname+u.search===v.origin+v.pathname+v.search)return 'internal';
-  if(u.origin!==v.origin)return 'ordinary';
+  if(u.origin!==v.origin || isWikiFilePage(url))return 'ordinary';
+  if(a.tagName==='A' && wrappedImageSlot(a.querySelector('img'),page,base))return 'gallery';
   const label=String((a.textContent||'')+' '+(a.getAttribute('aria-label')||'')+' '+(a.getAttribute('title')||'')).trim();
   const rel=(a.getAttribute('rel')||'').toLowerCase().split(/\s+/);
   const p=u.searchParams.get('p')||u.searchParams.get('page');
@@ -1717,7 +1783,7 @@ function contentLinkKind(a,page,base) {
      a.hasAttribute('data-lightbox') || a.hasAttribute('data-gallery'))return 'gallery';
   // One image-only link may point to an opaque image viewer. Fetch only
   // same-origin candidates, then require positive destination evidence.
-  if(a.querySelectorAll('img').length===1 && !String(a.textContent||'').trim() &&
+  if(!/\/(?:news|articles?|entry|post|archives)\/(?:\d|[^/]+\/\d)/i.test(u.pathname) && a.querySelectorAll('img').length===1 && !String(a.textContent||'').trim() &&
      !a.closest('figure')?.querySelector('figcaption')?.textContent.trim())return 'probe';
   return 'ordinary';
 }
@@ -1726,6 +1792,8 @@ function isNavigationThumbnail(el,page,base) {
   const a=el.closest && el.closest('a[href]');
   if(!a)return false;
   const kind=contentLinkKind(a,page,base);
+  const src=el.tagName==='IMG' && resolveMediaReference(el.currentSrc||el.getAttribute('data-original')||el.getAttribute('data-src')||el.getAttribute('src'),base);
+  if(src && (wrappedImagePageKey(page,src,true)||wrappedImageSlot(el,page,base,src)||isWikiFilePage(resolveMediaReference(a.getAttribute('href'),base))))return false;
   if(kind==='media'||kind==='internal')return false;
   const figure=el.closest('figure');
   if(kind==='ordinary' && figure && figure.querySelector('figcaption')?.textContent.trim())return false;
@@ -1905,7 +1973,9 @@ function getThumbSourceFacts(el, meta) {
   const anchor = tag === 'A' ? el : (el.closest ? el.closest('a[href]') : null);
   const href = anchor ? (anchor.getAttribute('href') || '').trim() : '';
   const anchorHref = resolveMediaReference(href, mediaBase);
-  const nonMedia = !!href && !isDirectImageUrl(anchorHref) && !isVideoUrl(anchorHref);
+  const src=tag==='IMG' && resolveMediaReference(el.currentSrc||el.getAttribute('data-original')||el.getAttribute('data-src')||el.getAttribute('src'),mediaBase);
+  const viewerImage=src && (wrappedImagePageKey(pageUrl,src,true)||wrappedImageSlot(el,pageUrl,mediaBase,src));
+  const nonMedia = !!href && !viewerImage && !(tag==='IMG' && isWikiFilePage(anchorHref)) && !isDirectImageUrl(anchorHref) && !isVideoUrl(anchorHref);
   let sameSitePageLink = false;
   if (anchorHref && nonMedia) {
     try {
@@ -2310,7 +2380,8 @@ function extractFromDocument(doc, source, baseUrl, responsiveHidden, viewerRoot)
         source: source,
         openUrl: u,
         mediaBase: mediaBase,
-        identityUrl: getDeclaredOriginalIdentity(img, u, mediaBase),
+        identityUrl: wrappedImagePageKey(baseUrl,u,true) || wrappedImageSlot(img,baseUrl,mediaBase,u) || getDeclaredOriginalIdentity(img, u, mediaBase),
+        directImageLink: !!wrappedImagePageKey(baseUrl,u,true),
         pictureFallbackUrls: related.length ? related.slice(0,4) : null,
         renditionAliases: !picture ? related.slice(0,4) : null,
         el: img
@@ -2898,6 +2969,16 @@ function mergeBest(target, candidate) {
   const keepDup = target.dupCount || 1;
   const keepUrl = target.url;
   const keepRequest = target.requestUrl || keepUrl;
+  const priorPreview=target.__listPreviewUrl || keepRequest;
+  const preservePreview=target.kind==='img' && candidate.kind==='img' &&
+    target.dedupKey===candidate.dedupKey && !target.__failed &&
+    !target.__allHidden && !target.__autoHidden && !target.__isNoise &&
+    !isExcludedLiveImage(priorPreview) && priorPreview!==candidate.requestUrl &&
+    !!wrappedImagePageKey(target.dedupKey,priorPreview,false) &&
+    !!wrappedImagePageKey(target.dedupKey,candidate.requestUrl,true) &&
+    !wrappedImagePageKey(target.dedupKey,priorPreview,true);
+  const keepPreviewSize=preservePreview && target.width && target.height &&
+    !candidate.width && !candidate.height ? [target.width,target.height] : null;
   const keepEmbedType = target.embedType || '';
   const keepPreviewText = target.previewText || '';
   const keepPoster = target.poster || '';
@@ -2912,13 +2993,15 @@ function mergeBest(target, candidate) {
   const keepNoiseReason = target.__noiseReason;
   const keepAutoHidden = !!target.__autoHidden;
   const keepAutoHiddenReason = target.__autoHiddenReason || '';
-  if (keepRequest !== (candidate.requestUrl || candidate.url)) forgetVisualFingerprint(target);
+  if (!preservePreview && keepRequest !== (candidate.requestUrl || candidate.url)) forgetVisualFingerprint(target);
   const keepHashDup = target.__hashDup;
   const keepFailed = target.__failed;
   const keepRenderUrl = target.__renderUrl;
   const keepAllHidden = !!target.__allHidden;
   const keepDupClusterUrls = Array.isArray(target.__dupClusterUrls) ? target.__dupClusterUrls.slice() : [];
   Object.assign(target, candidate);
+  target.__listPreviewUrl=preservePreview?priorPreview:'';
+  if(keepPreviewSize)[target.width,target.height]=keepPreviewSize;
   target.id = keepId;
   target.index = keepIndex;
   [target.__orderPage,target.__orderPath,target.__orderRef,target.pageLabel] = keepOrder;
@@ -2940,7 +3023,7 @@ function mergeBest(target, candidate) {
   target.__origHidden = target.__allHidden;
   target.__autoHidden = keepAutoHidden && !!candidate.__autoHidden;
   target.__autoHiddenReason = target.__autoHidden ? pickAutoHiddenReason(keepAutoHiddenReason, candidate.__autoHiddenReason || '') : '';
-  if (keepRequest === (target.requestUrl || target.url)) {
+  if (preservePreview || keepRequest === (target.requestUrl || target.url)) {
     target.__isNoise = keepIsNoise;
     target.__noiseReason = keepNoiseReason;
     target.__hashDup = keepHashDup;
@@ -2979,7 +3062,8 @@ function adoptItem(item) {
     const bothImages = item.kind === 'img' && existing.kind === 'img';
     const distinctRequest = bothImages && item.requestUrl !== existing.requestUrl;
     if (bothImages) {
-      const related = distinctRequest && sameDeclaredRendition(existing.requestUrl,item.requestUrl);
+      const related = distinctRequest && (sameDeclaredRendition(existing.requestUrl,item.requestUrl) ||
+        (key===existing.dedupKey && !!wrappedImagePageKey(key,existing.requestUrl,false) && !!wrappedImagePageKey(key,item.requestUrl,false)));
       const variants = uniqueThumbUrls((existing.pictureFallbackUrls || []).concat(item.pictureFallbackUrls || [], related ? [existing.requestUrl,item.requestUrl] : []));
       if (variants.length) {
         existing.pictureFallbackUrls=variants.filter(u=>u!==existing.requestUrl).slice(0,4);
@@ -3278,7 +3362,8 @@ function collectCrawlLinksFromDocument(doc, baseUrl, details) {
     if(kind==='page' && a.tagName!=='LINK' && !inBody && !a.closest('#entryPageNav,.article-inner-pager,.pagination,.pager'))return;
     if(a.ownerDocument===document && a.tagName==='A' && isLiveCssHidden(a))return;
     if((kind==='probe'||kind==='gallery') && a.ownerDocument===document && !String(a.textContent||'').trim() && a.querySelector('img') && Array.from(a.querySelectorAll('img')).every(img=>isLiveCssHidden(img)))return;
-    const list=kind==='page'?nexts:body;
+    const wrapped=kind==='gallery' && a.tagName==='A' && wrappedImageSlot(a.querySelector('img'),page,base);
+    const list=kind==='page'||wrapped?nexts:body;
     const before=list.length;
     pushCandidate(list,href);
     if(list.length===before)return;
@@ -3288,6 +3373,7 @@ function collectCrawlLinksFromDocument(doc, baseUrl, details) {
     const route=kind==='page'?(parentKind==='page'?'page':'gallery'):kind;
     if(!old || route==='page' || (old==='probe' && route==='gallery'))routes.set(key,route);
     if(inBody)bodyKeys.add(key);
+    if(wrapped && details) details.wrappedViewerCount=(details.wrappedViewerCount||0)+1;
   });
   if(details)details.priorityLinks=nexts.slice();
   const merged = nexts.concat(body, out);
@@ -3815,6 +3901,7 @@ async function startCrawl() {
   state.crawl.mode = '';
   state.crawl.pagerBase = '';
   state.crawl.pagerParam = '';
+  let wrappedViewerCount=0;
   const bootstrap = state.cfg.crawlBootstrapReuse && state.crawl.bootstrap
     ? state.crawl.bootstrap
     : null;
@@ -3825,12 +3912,15 @@ async function startCrawl() {
     state.crawl.pagerBase = plan.baseKey;
     state.crawl.pagerParam = plan.param;
     enqueueCrawlLinks(plan.urls, true);
-    const links=collectCrawlLinks(document,location.href,{});
+    const details={};
+    const links=collectCrawlLinks(document,location.href,details);
+    wrappedViewerCount=details.wrappedViewerCount||0;
     enqueueCrawlLinks(links.filter(u=>state.crawl.contentRoutes.get(normalizeCrawlUrl(u))!=='page'));
   } else {
     const details = {};
     const links = bootstrap ? bootstrap.links : collectCrawlLinks(document, location.href, details);
     const priority = bootstrap ? bootstrap.priorityLinks : details.priorityLinks;
+    wrappedViewerCount=details.wrappedViewerCount||0;
     enqueueCrawlLinks(priority || [], true);
     enqueueCrawlLinks(links);
   }
@@ -3838,6 +3928,7 @@ async function startCrawl() {
   if (state.crawl.mode === 'pager') {
     state.crawl.limit = Math.max(state.crawl.limit, crawlQueueLength() + 2);
   }
+  state.crawl.limit=Math.max(state.crawl.limit,Math.min(wrappedViewerCount,state.cfg.crawlBoostLimit));
   perfGauge('crawl.queue', crawlQueueLength());
   state.log.push('crawl', 'start mode=' + (state.crawl.mode || 'normal') + ' queue=' + crawlQueueLength() + ' limit=' + state.crawl.limit + ' visited=' + state.crawl.visited.size + ' inFlight=' + state.crawl.inFlight + ' errors=' + state.items.errorCount);
   if (state.crawl.timer) clearTimeout(state.crawl.timer);
@@ -4913,7 +5004,7 @@ function visualEligible(item) {
 function visualSample(item,img) {
   const w=img.naturalWidth,h=img.naturalHeight;
   if(w<80 || h<64 || w*h<10000)return null;
-  const actual=getDisplayUrl(item);
+  const actual=img.currentSrc || img.src || getListThumbUrl(item);
   let u;
   try{u=new URL(actual,location.href);}catch(e){return null;}
   if(u.origin!==location.origin || !/\.jpe?g$/i.test(u.pathname))return null;
@@ -5332,7 +5423,9 @@ function initThumbLoader() {
       if (!item || item.__failed || item.__thumbLoaded || item.__thumbLoading ||
           (item.kind !== 'img' && !item.__thumbPreview)) continue;
       const r = card.getBoundingClientRect();
-      if (r.bottom >= top && r.top <= bottom) thumbEnqueue(item);
+      const inView=r.bottom>rect.top && r.top<rect.bottom;
+      item.__thumbInView=inView?1:0;
+      if (r.bottom >= top && r.top <= bottom) thumbEnqueue(item,inView && !item.__listUpgradePreview);
     }
   };
   const schedule = function() {
@@ -5617,7 +5710,7 @@ function thumbEnqueue(item, priority) {
   }
   if (!img) return;
   if (!state.thumb) return;
-  const pri = !!priority;
+  const pri = !!priority && !item.__listUpgradePreview;
   if (state.thumb.queued.has(item.id)) {
     if (pri) promoteQueuedThumbItem(item);
     thumbSchedulePump();
@@ -5790,6 +5883,7 @@ function getThumbCandidateUrls(item, src) {
   };
   add(src);
   if (item && item.kind === 'img') {
+    if(item.__listPreviewUrl) add(getDisplayUrl(item));
     add(item.fallbackRequestUrl);
     if (item.pictureFallbackUrls) item.pictureFallbackUrls.forEach(add);
     if (item.imgurFallbackUrls) item.imgurFallbackUrls.forEach(add);
@@ -5810,7 +5904,7 @@ function startThumbLoad(item) {
   }
   if (!img) return;
   const previewOnly = item.kind !== 'img';
-  const src = img.dataset && img.dataset.src ? img.dataset.src : getDisplayUrl(item);
+  const src = img.dataset && img.dataset.src ? img.dataset.src : getListThumbUrl(item);
   if (!src) return;
   const candidateUrls = getThumbCandidateUrls(item, src);
   if (!candidateUrls.length) return;
@@ -5835,13 +5929,48 @@ function startThumbLoad(item) {
     return visible ? 300 : 180;
   };
   const shownSrc = (img.currentSrc || img.src || '');
-  const keepVisibleOnReload = !!(
+  const upgradePreview=item.__listUpgradePreview;
+  const upgrade=!!(upgradePreview && !isExcludedLiveImage(upgradePreview) && img.complete && img.naturalWidth &&
+    isSameLoadedSrc(shownSrc,upgradePreview));
+  const previewNode=upgrade?img:null;
+  if(previewNode){
+    // Keep the already painted node until the replacement is decoded.
+    // At most one extra node for each existing in-flight queue slot.
+    img=document.createElement('img');
+    img.style.cssText=previewNode.style.cssText;
+    img.style.position='absolute';
+    img.style.left='0';
+    img.style.top='0';
+    img.style.opacity='0';
+    img.decoding='async';
+    img.alt='';
+    img.dataset.src=src;
+    previewNode.parentNode.insertBefore(img,previewNode.nextSibling);
+    item.__thumbImg=img;
+  }
+  const finishUpgrade=function(success){
+    if(!previewNode)return;
+    if(success){
+      img.style.position=previewNode.style.position;
+      img.style.left=previewNode.style.left;
+      img.style.top=previewNode.style.top;
+      img.style.opacity='1';
+      previewNode.remove();
+    }else{
+      img.onload=null;img.onerror=null;
+      img.src=BLANK_GIF;
+      img.remove();
+      if(item.__thumbImg===img)item.__thumbImg=previewNode;
+    }
+  };
+  try{if('fetchPriority' in img)img.fetchPriority=upgrade?'low':(item.__thumbInView?'high':'auto');}catch(e){}
+  const keepVisibleOnReload = !upgrade && !!(
     item.__thumbLoaded &&
     isSameLoadedSrc(shownSrc, src) &&
     img.style.opacity !== '0' &&
     !isSameLoadedSrc(shownSrc, BLANK_GIF)
   );
-  scheduleOverlayShow(item, card, getOverlayDelay());
+  if(!upgrade)scheduleOverlayShow(item, card, getOverlayDelay());
   if (!keepVisibleOnReload) img.style.opacity = '0';
 
   let retries = item.__thumbRetry || 0;
@@ -5882,6 +6011,7 @@ function startThumbLoad(item) {
       img.onload = null;
       img.onerror = null;
       hideThumbOverlay(card);
+      finishUpgrade(false);
     }
     finish();
   };
@@ -5902,6 +6032,7 @@ function startThumbLoad(item) {
     if (pendingRefresh && item.card && !item.__failed) {
       updateCard(item);
     }
+    queueOriginalUpgrade(item);
     if (item.__thumbCtx && item.__thumbCtx.token === token) item.__thumbCtx = null;
   };
 
@@ -5926,6 +6057,15 @@ function startThumbLoad(item) {
       return;
     }
     clearOverlayShowTimer(item);
+    // The original may have been discovered while the initial preview
+    // was in flight. Recover from the verified URL without losing the card.
+    const lateOriginal=item.__listPreviewUrl && getDisplayUrl(item);
+    if(lateOriginal && !candidateUrls.includes(lateOriginal) && !isExcludedLiveImage(lateOriginal)){
+      candidateUrls.push(lateOriginal);
+      if(scheduleNextCandidate())return;
+    }
+    finishUpgrade(false);
+    item.__listUpgradePreview='';
     if (item.imgurFallbackUrls && item.requestUrl === requestAtStart) {
       const extra = item.imgurFallbackUrls.filter(u => !candidateUrls.includes(u) && !isExcludedLiveImage(u));
       if (extra.length) {
@@ -5998,7 +6138,7 @@ function startThumbLoad(item) {
     const baseSrc = candidateUrls[candidateIndex] || src;
     const targetSrc = retries > 0 ? addRetryBuster(baseSrc, retries) : baseSrc;
     if (img.dataset) img.dataset.src = baseSrc;
-    scheduleOverlayShow(item, card, getOverlayDelay());
+    if(!upgrade)scheduleOverlayShow(item, card, getOverlayDelay());
     img.onload = function() {
       if (done) return;
       if (!item.__thumbCtx || item.__thumbCtx.token !== token) {
@@ -6015,17 +6155,30 @@ function startThumbLoad(item) {
           return;
         }
         clearOverlayShowTimer(item);
-        if (!previewOnly && item.requestUrl === requestAtStart) {
-          if (candidateIndex > 0 || (candidateUrls[candidateIndex] && candidateUrls[candidateIndex] !== src)) {
+        const sameRequest=item.requestUrl===requestAtStart;
+        const retainedPreview=!!item.__listPreviewUrl && isSameLoadedSrc(baseSrc,item.__listPreviewUrl);
+        const currentOriginal=isSameLoadedSrc(baseSrc,getDisplayUrl(item));
+        if (!previewOnly && (sameRequest || retainedPreview || currentOriginal)) {
+          // Preview success never substitutes a smaller URL for the original.
+          // If that preview fails and a different candidate succeeds, use it.
+          if(item.__listPreviewUrl && !retainedPreview)item.__listPreviewUrl='';
+          if (sameRequest && !retainedPreview && (candidateIndex > 0 || (candidateUrls[candidateIndex] && candidateUrls[candidateIndex] !== src))) {
             item.__resolvedRequestFor = requestAtStart;
             item.__resolvedRequestUrl = candidateUrls[candidateIndex];
             item.width = img.naturalWidth || 0;
             item.height = img.naturalHeight || 0;
           }
+          if(item.__listUpgradePreview || (currentOriginal && !sameRequest)){
+            item.width=img.naturalWidth||0;
+            item.height=img.naturalHeight||0;
+            forgetVisualFingerprint(item);
+          }
           applyThumbMetrics(item, img, card);
           registerVisualFingerprint(item,img);
         }
+        finishUpgrade(true);
         revealThumb(card, img);
+        item.__listUpgradePreview='';
         perfCount('thumb.reveal');
         perfMarkOnce('thumb.firstReveal');
         if (item.__thumbInView) perfMarkOnce('thumb.firstVisibleReveal');
@@ -6231,7 +6384,7 @@ function createCard(item) {
   };
 
   if (item.kind === 'img') {
-    const displayUrl = getDisplayUrl(item);
+    const displayUrl = getListThumbUrl(item);
     appendThumbImage(displayUrl, false);
     const badgeInfo = getMediaBadgeInfo(item);
     if (badgeInfo) {
@@ -6428,7 +6581,7 @@ function createCard(item) {
   card.appendChild(dup);
   item.card = card;
   updateDupBadge(item);
-  item.__renderUrl = (item.kind === 'img') ? getDisplayUrl(item) : item.url;
+  item.__renderUrl = (item.kind === 'img') ? getListThumbUrl(item) : item.url;
   if (item.kind !== 'img') releaseSourceEl(item, 'card');
   return card;
 }
@@ -6514,7 +6667,7 @@ function updateCard(item) {
     img = item.card.querySelector('img');
     if (img) item.__thumbImg = img;
   }
-  const displayUrl = getDisplayUrl(item);
+  const displayUrl = getListThumbUrl(item);
   const shownSrc = img ? (img.currentSrc || img.src || '') : '';
   const requestedSrc = (img && img.dataset) ? (img.dataset.src || '') : '';
   const exactSource = !!item.requestUrl;
@@ -6525,7 +6678,8 @@ function updateCard(item) {
   const loadingWithSwitch = !!(item.__thumbLoading && !sameRequestedAsDisplay && urlChanged);
   if (loadingWithSwitch) item.__thumbPendingRefresh = 1;
   const keepCurrentLoad = !!(item.__thumbLoading && (sameRequestedAsDisplay || loadingWithSwitch));
-  const needReload = !!(img && !keepCurrentLoad && !sameShownAsDisplay &&
+  const keepQueuedUpgrade=!!(item.__listUpgradePreview && sameRequestedAsDisplay && !urlChanged);
+  const needReload = !!(img && !keepCurrentLoad && !keepQueuedUpgrade && !sameShownAsDisplay &&
     (urlChanged || !item.__thumbLoaded || isSameLoadedSrc(shownSrc, BLANK_GIF)));
   if (img && item.kind === 'img') {
     img.dataset.src = displayUrl;
@@ -6554,6 +6708,7 @@ function updateCard(item) {
   if (open) open.href = allowOpen(item.openUrl) ? item.openUrl : item.url;
   updateDupBadge(item);
   item.__renderUrl = displayUrl;
+  queueOriginalUpgrade(item);
 }
 
 function updateDupBadge(item) {
@@ -9094,6 +9249,30 @@ function isSameImageVariantUrl(a, b) {
   const ka = canonicalMediaKey(a, 'img');
   const kb = canonicalMediaKey(b, 'img');
   return !!(ka && kb && ka === kb);
+}
+
+// The grid needs only the already observed article rendition. The
+// lightbox and external-open path still use the confirmed original.
+function queueOriginalUpgrade(item) {
+  if(state.ui.disposed || !item || !item.card || item.__failed || item.__thumbLoading || !item.__thumbLoaded || !item.__listPreviewUrl)return;
+  const preview=item.__listPreviewUrl, original=getDisplayUrl(item);
+  const img=item.__thumbImg;
+  if(!original || original===preview || !img || !img.complete || !img.naturalWidth ||
+      !isSameLoadedSrc(img.currentSrc||img.src,preview) || isSourceSuppressed(item) ||
+      isExcludedLiveImage(preview) || isExcludedLiveImage(original))return;
+  item.__listPreviewUrl='';
+  item.__listUpgradePreview=preview;
+  item.__thumbLoaded=false;
+  item.__thumbRetry=0;
+  item.__renderUrl=original;
+  img.dataset.src=original;
+  // A quality upgrade must not jump ahead of first-time visible thumbnails.
+  thumbEnqueue(item,false);
+}
+
+function getListThumbUrl(item) {
+  if(item && item.kind==='img' && item.__listPreviewUrl && !isExcludedLiveImage(item.__listPreviewUrl))return item.__listPreviewUrl;
+  return getDisplayUrl(item);
 }
 
 function getDisplayUrl(item) {
