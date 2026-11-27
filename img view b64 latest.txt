@@ -13,7 +13,7 @@ javascript:(function(){
  * Reuse responsive class decisions within each synchronous CSS-rule pass.
  */
 const SCRIPT_NAME = 'img view b64';
-const SCRIPT_REV = '3.0.4';
+const SCRIPT_REV = '3.0.7';
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 const RUN_TOKEN = SCRIPT_NAME + ':' + SCRIPT_REV + ':' + Date.now() + ':' + Math.random();
 
@@ -170,6 +170,7 @@ const state = {
     queueDedup: new Set(),
     queuePriority: new Set(),
     pageOrder: new Map(),
+    contentRoutes: new Map(),
     responsiveCss: new Map(),
     responsiveCssBytes: 0,
     visited: new Set(),
@@ -631,6 +632,7 @@ function cleanupUi() {
   state.items.visualCanvas=null;
   state.items.liveImageVisibility.clear();
   state.crawl.responsiveCss.clear();
+  state.crawl.contentRoutes.clear();
   for (const it of state.items.list) {it.__visualGroup=null;it.__visualOrder=null;}
   if (state.items.renderRaf) cancelAnimationFrame(state.items.renderRaf);
   state.items.renderRaf = 0;
@@ -1621,22 +1623,117 @@ function setFilter(key, opts) {
 }
 
 /* [07] collect */
-function inBodyScope(el) {
+function inBodyScope(el, scopePass) {
   if (!el || !el.closest) return false;
   const sel = state.cfg.__articleSelector || '';
   if (!sel) return false;
-  return !!el.closest(sel);
+  if(el.closest(sel))return true;
+  // A broad legacy wrapper is only a fallback when no ordinary body root
+  // exists inside it. Do not expand an already identified article's scope.
+  const root=el.closest('#contents,[role="main"]');
+  if(root && !root.querySelector(sel))return true;
+  // Semantic-section fallback only when the document has no conventional
+  // content root. No site-specific selectors or unconditional body scan.
+  const section=el.closest('section');
+  if(!section || inAvoidScope(section))return false;
+  const doc=el.ownerDocument;
+  if(!doc)return false;
+  let conventional=scopePass ? scopePass.get(doc) : undefined;
+  if(conventional===undefined){
+    conventional=Array.from(doc.querySelectorAll(sel)).some(n=>!inAvoidScope(n));
+    if(scopePass)scopePass.set(doc,conventional);
+  }
+  if(conventional)return false;
+  let eligible=scopePass ? scopePass.get(section) : undefined;
+  if(eligible===undefined){
+    // A section containing an editorial figure, a heading and media, or
+    // an unlinked substantive photo can be a report/photo section.
+    eligible=!!section.querySelector('figure img,figure video') ||
+      (!!section.querySelector('h1,h2,h3,h4,h5,h6') && !!section.querySelector('img,video,iframe')) ||
+      Array.from(section.querySelectorAll('img')).slice(0,24).some(img=>{
+        if(inAvoidScope(img) || img.closest('a[href]') || isOriginallyHidden(img))return false;
+        const size=getImgSize(img);
+        return size.w>=state.cfg.minWidth && size.h>=state.cfg.minHeight && size.w*size.h>=state.cfg.minArea;
+      });
+    if(scopePass)scopePass.set(section,eligible);
+  }
+  return eligible;
+}
+
+// Exclude secondary content by semantic region, not image dimensions.
+const SECONDARY_CONTENT=/^(?:navigation|footer|breadcrumb|related|recommend(?:ed|ation|ations)?|ranking|popular|pickup|sidebar|widget|advert(?:isement|ising)?|ads?|sponsored|promo(?:tion)?|carouselads)$/i;
+function inSecondaryContent(el) {
+  for(let n=el;n && n.nodeType===1;n=n.parentElement){
+    const words=String((n.getAttribute('class')||'')+' '+(n.id||'')).replace(/([a-z0-9])([A-Z])/g,'$1 $2').split(/[^a-zA-Z0-9]+/);
+    if(words.some(v=>SECONDARY_CONTENT.test(v)))return true;
+    if(n.matches('.menuInner,.globalMenu,.siteMenu,.relativeContents,[role="navigation"],[role="complementary"]'))return true;
+    if(n.matches('section,[role="region"],[role="complementary"]')){
+      const label=n.getAttribute('aria-label')||'';
+      const heading=Array.from(n.children).find(x=>/^H[2-6]$/.test(x.tagName));
+      if(/^(?:関連記事|関連ニュース|おすすめ(?:記事|商品)?|人気記事|ランキング|広告|related (?:articles|posts|stories)|recommended|popular (?:articles|posts)|advertisement)\s*[:：]?$/i.test((label||heading?.textContent||'').trim()))return true;
+    }
+  }
+  return false;
 }
 
 function inAvoidScope(el) {
   if (!el || !el.closest) return false;
   const sel = state.cfg.__avoidSelector || '';
   if (!sel) return false;
-  return !!el.closest(sel);
+  return !!el.closest(sel) || inSecondaryContent(el);
 }
 
-function getCollectScopeInfo(el, strictBody) {
-  const inBody = inBodyScope(el);
+function contentLinkKind(a,page,base) {
+  const raw=(a.getAttribute('href')||'').trim();
+  if(!raw || raw.startsWith('#'))return 'internal';
+  const url=resolveMediaReference(raw,base);
+  if(!url)return 'ordinary';
+  if(isImageResourceLink(url)||isDirectImageUrl(url)||isVideoUrl(url)||getEmbedInfo(url))return 'media';
+  let u,v;
+  try{u=new URL(url);v=new URL(page,location.href);}catch(e){return 'ordinary';}
+  if(u.origin+u.pathname+u.search===v.origin+v.pathname+v.search)return 'internal';
+  if(u.origin!==v.origin)return 'ordinary';
+  const label=String((a.textContent||'')+' '+(a.getAttribute('aria-label')||'')+' '+(a.getAttribute('title')||'')).trim();
+  const rel=(a.getAttribute('rel')||'').toLowerCase().split(/\s+/);
+  const p=u.searchParams.get('p')||u.searchParams.get('page');
+  const stripPage=x=>{const q=new URL(x.href);q.searchParams.delete('p');q.searchParams.delete('page');return q.origin+q.pathname+q.search;};
+  if(p && /^\d+$/.test(p) && stripPage(u)===stripPage(v) && !/次の記事|前の記事|next article|previous article/i.test(label))return 'page';
+  const family=x=>{
+    const m=/(?:[-_](\d+)|\/page\/?(\d+))(?=\/?$|\.[a-z]+$)/i.exec(x.pathname);
+    return {stem:(m?x.pathname.slice(0,m.index)+x.pathname.slice(m.index+m[0].length):x.pathname).replace(/\/$/,''),n:m?Number(m[1]||m[2]):1};
+  };
+  const uf=family(u),vf=family(v);
+  const sequential=uf.stem===vf.stem && u.pathname!==v.pathname &&
+    uf.n>=1 && vf.n>=1 && Math.max(uf.n,vf.n)<=state.cfg.crawlArticleMaxPages && Math.abs(uf.n-vf.n)===1;
+  const explicitNext=rel.includes('next')||rel.includes('prev');
+  const pager=a.closest('#entryPageNav,.article-inner-pager,.pagination,.pager');
+  if((explicitNext||pager) && !/次の記事|前の記事|次の投稿|前の投稿|next (?:article|post|story)|previous (?:article|post|story)/i.test(label)){
+    if(sequential ||
+       /(?:^|\/)page[-_]?\d+\/?$/i.test(u.pathname) && /^(?:\/|\/page[-_]?\d+\/?)$/i.test(v.pathname) ||
+       (explicitNext && /(?:次のページ|前のページ|次ページ|前ページ|next page|previous page)/i.test(label)))return 'page';
+  }
+  if(/(?:^|[\/_-])(?:gallery|galleries|photo-gallery|image-gallery|photos|photo|images|image|img|lightbox|viewer|viewimage|zoom|original)(?=$|[\/_\-.])/i.test(u.pathname) ||
+     /(?:画像(?:を)?(?:拡大|表示|見る|閲覧)|写真(?:を)?(?:拡大|表示|見る|一覧)|画像一覧|フォトギャラリー|写真ギャラリー|拡大画像|原寸|view (?:full |larger )?(?:image|photo)|enlarge|photo gallery|image gallery)/i.test(label) ||
+     a.hasAttribute('data-lightbox') || a.hasAttribute('data-gallery'))return 'gallery';
+  // One image-only link may point to an opaque image viewer. Fetch only
+  // same-origin candidates, then require positive destination evidence.
+  if(a.querySelectorAll('img').length===1 && !String(a.textContent||'').trim() &&
+     !a.closest('figure')?.querySelector('figcaption')?.textContent.trim())return 'probe';
+  return 'ordinary';
+}
+
+function isNavigationThumbnail(el,page,base) {
+  const a=el.closest && el.closest('a[href]');
+  if(!a)return false;
+  const kind=contentLinkKind(a,page,base);
+  if(kind==='media'||kind==='internal')return false;
+  const figure=el.closest('figure');
+  if(kind==='ordinary' && figure && figure.querySelector('figcaption')?.textContent.trim())return false;
+  return true;
+}
+
+function getCollectScopeInfo(el, strictBody, scopePass) {
+  const inBody = inBodyScope(el,scopePass);
   return {
     skip: !!((strictBody && !inBody) || inAvoidScope(el)),
     scope: inBody ? 'body' : ''
@@ -1818,7 +1915,7 @@ function getThumbSourceFacts(el, meta) {
     } catch (e) {}
   }
   return {
-    outsideBody: !inBodyScope(el),
+    outsideBody: !inBodyScope(el,meta && meta.scopePass),
     avoid: inAvoidScope(el),
     classHint: /(thumb|thumbnail|related|ranking|recommend|popular|pickup|sidebar|widget|pager|list)/.test(cls),
     relatedHint: /(related|recommend|ranking|pickup|popular|list)/.test(cls),
@@ -2134,10 +2231,11 @@ function syncMediaOrder() {
   }
 }
 
-function extractFromDocument(doc, source, baseUrl, responsiveHidden) {
+function extractFromDocument(doc, source, baseUrl, responsiveHidden, viewerRoot) {
   const items = [];
   const orderCache = new WeakMap();
   const cssHiddenCache=new WeakMap();
+  const scopePass=new WeakMap();
   const makeOrderedItem = (kind,url,meta,base) => {
     if(kind==='img'){
       const el=liveImageSourceElement(meta.el,cssHiddenCache);
@@ -2151,6 +2249,7 @@ function extractFromDocument(doc, source, baseUrl, responsiveHidden) {
       }
     }
     meta.orderPath=mediaOrderPath(meta.el,orderCache);
+    meta.scopePass=scopePass;
     return makeItem(kind,url,meta,base);
   };
   const strictBody = !!state.cfg.strictBodyOnly;
@@ -2166,7 +2265,7 @@ function extractFromDocument(doc, source, baseUrl, responsiveHidden) {
     if (bodyScopeCache && bodyScopeCache.has(el)) {
       inBody = !!bodyScopeCache.get(el);
     } else {
-      inBody = inBodyScope(el);
+      inBody = viewerRoot ? viewerRoot.contains(el) : inBodyScope(el,scopePass);
       if (bodyScopeCache) bodyScopeCache.set(el, inBody);
     }
     if (avoidScopeCache && avoidScopeCache.has(el)) {
@@ -2184,7 +2283,7 @@ function extractFromDocument(doc, source, baseUrl, responsiveHidden) {
   imgs.forEach(function(img) {
     if (responsiveHidden && responsiveHidden.has(img)) return;
     const scopeInfo = getScopedInfo(img);
-    if (scopeInfo.skip) return;
+    if (scopeInfo.skip || isNavigationThumbnail(img,baseUrl,mediaBase)) return;
     const urls = collectImageUrls(img, mediaBase);
     if (!urls.length) return;
     const size = getImgSize(img);
@@ -2423,20 +2522,58 @@ function parseCssUrls(value) {
   return out;
 }
 
-function extractBackgrounds() {
+function backgroundMediaSlot(node) {
+  const marker=el=>el && /(?:^|[^a-z])(?:img|image|photo|picture|visual|hero|mv|slider)(?:$|[^a-z])/i.test(
+    String((el.getAttribute('class')||'')+' '+(el.id||'')).replace(/([a-z0-9])([A-Z])/g,'$1 $2'));
+  return node.matches('figure,[role="img"]') || marker(node) || marker(node.parentElement);
+}
+
+function primaryLinkedBackground(node,rect) {
+  const a=node.closest('a[href]');
+  if(!a)return true;
+  if(!isNavigationThumbnail(node,location.href,document.baseURI))return true;
+  // A main feature visual is not the same as a small article-link card.
+  // Require a named visual slot plus heading and explanatory paragraph
+  // inside the same feature link. Never admit related regions.
+  const legacyRoot=!a.closest(state.cfg.__articleSelector) && a.closest('#contents,[role="main"]');
+  if(!legacyRoot)return false;
+  if(a.querySelector('h1,h2,h3') && Array.from(a.querySelectorAll('p')).some(p=>
+      !backgroundMediaSlot(p) && p.textContent.trim().length>=12))return true;
+  // Large primary carousel visual in a legacy content wrapper; do not
+  // follow its destination or accept ordinary thumbnail-list images.
+  const slider=a.closest('ul,ol');
+  return !!slider && (slider.id==='slider' || slider.classList.contains('slider')) &&
+    rect.width>=300 && rect.height>=160 && rect.width>=document.documentElement.clientWidth*0.72;
+}
+
+function* stylesheetBackgroundNodes() {
+  // One bounded pass, only when no usable current-page media was found.
+  // Include anonymous direct children of named visual slots.
+  const root=document.body;
+  if(!root)return;
+  const walker=document.createTreeWalker(root,1);
+  for(let n=walker.nextNode(),i=0;n && i<1200;n=walker.nextNode(),i++){
+    if(backgroundMediaSlot(n))yield n;
+  }
+}
+
+function extractBackgrounds(stylesheetOnly) {
   const items = [];
   const orderCache = new WeakMap();
   const selector = '[style*="background"], [data-bg], [data-background], [data-bgurl]';
   const hiddenCache = typeof WeakMap === 'function' ? new WeakMap() : null;
-  const nodes = document.querySelectorAll(selector);
+  const nodes = stylesheetOnly ? stylesheetBackgroundNodes() : document.querySelectorAll(selector);
+  const scopePass=new WeakMap();
   let checked = 0;
   for (const node of nodes) {
     if (checked >= state.cfg.maxBgChecks) break;
-    const scopeInfo = getCollectScopeInfo(node, !!state.cfg.strictBodyOnly);
-    if (scopeInfo.skip) continue;
+    const scopeInfo = getCollectScopeInfo(node, !!state.cfg.strictBodyOnly,scopePass);
+    if (scopeInfo.skip || (!stylesheetOnly && isNavigationThumbnail(node,location.href,document.baseURI))) continue;
+    if(stylesheetOnly && (node.matches(selector) || node.matches('img,video,svg,script,style,button') || node.closest('#'+ROOT_ID)))continue;
     checked++;
     const rect = node.getBoundingClientRect ? node.getBoundingClientRect() : { width: 0, height: 0 };
     if (rect.width * rect.height < state.cfg.minArea) continue;
+    if(stylesheetOnly && (!primaryLinkedBackground(node,rect) || rect.width<state.cfg.minWidth || rect.height<state.cfg.minHeight))continue;
     const urls = [];
     if (node.dataset) {
       if (node.dataset.bg) urls.push(node.dataset.bg);
@@ -2455,6 +2592,7 @@ function extractBackgrounds() {
       noteLiveImageVisibility(resolved,node,!!hidden);
       if(hidden)return;
       if (!isImageUrl(u)) return;
+      if(stylesheetOnly && /(?:^|[\/_-])(?:btn|button|ico|icon|logo|banner|thumb|spacer)(?:[\d_.-]|$)/i.test(new URL(resolved,location.href).pathname))return;
       items.push(makeItem('img', u, {
         width: Math.round(rect.width),
         height: Math.round(rect.height),
@@ -2463,6 +2601,7 @@ function extractBackgrounds() {
         source: 'bg',
         openUrl: u,
         orderPath: mediaOrderPath(node,orderCache),
+        scopePass: scopePass,
         el: node
       }));
     });
@@ -2544,6 +2683,12 @@ async function collectInitial() {
     addItems(extractBackgrounds());
     perfCount('collect.bg.items', state.items.list.length - beforeBg);
     state.log.push('collect', 'bg +' + (state.items.list.length - beforeBg) + ' total=' + state.items.list.length);
+  }
+  if(!state.items.list.some(it=>!it.__failed && !it.__hashDup && !isSourceSuppressed(it) &&
+      !(state.cfg.hiddenHide && (it.__allHidden || it.__autoHidden)) && !(state.cfg.noiseHide && it.__isNoise))){
+    const before=state.items.list.length;
+    addItems(extractBackgrounds(true));
+    state.log.push('collect','stylesheet visual fallback +'+(state.items.list.length-before));
   }
   state.log.push('collect', 'script/html scans DISABLED (body-only strict)');
   perfEnd('collect', collectStartedAt);
@@ -3117,23 +3262,34 @@ function collectCrawlLinksFromDocument(doc, baseUrl, details) {
     if (!allowUrl(u)) return;
     list.push(u.toString());
   }
-  const priLinks = Array.from(doc.querySelectorAll(
-    'link[rel~=\"next\"][href], a[rel~=\"next\"][href], a[rel~=\"prev\"][href], #entryPageNav a[href], li.next > a[href], li.prev > a[href], a.next[href], a.prev[href]'
-  ));
-  priLinks.forEach(function(a) {
-    pushCandidate(nexts, a.getAttribute('href'));
-  });
-  if (details) details.priorityLinks = nexts.slice();
-  const links = Array.from(doc.querySelectorAll('a[href]'));
+  const routes=state.crawl.contentRoutes;
+  const scopePass=new WeakMap();
+  const parentKind=routes.get(currentKey)||'page';
+  const links = Array.from(doc.querySelectorAll('link[rel~="next"][href],link[rel~="prev"][href],a[href]'));
   links.forEach(function(a) {
-    const href = a.getAttribute('href');
-    if (!href || href.startsWith('#')) return;
-    const inBody = inBodyScope(a) && !inAvoidScope(a);
-    const list = inBody ? body : out;
-    const before = list.length;
-    pushCandidate(list, href);
-    if (inBody && list.length > before && isSameOriginUrl(list[list.length - 1], base)) bodyKeys.add(normalizeCrawlUrl(list[list.length - 1]));
+    const href=a.getAttribute('href');
+    if(!href || href.startsWith('#') || inSecondaryContent(a))return;
+    const kind=contentLinkKind(a,page,base);
+    const inBody=inBodyScope(a,scopePass)&&!inAvoidScope(a);
+    // Gallery descendants may only follow their own continuation. Never
+    // recursively expand a gallery's ordinary or other gallery links.
+    if(kind!=='page' && (!inBody || parentKind!=='page' || (kind!=='gallery' && kind!=='probe')))return;
+    if(kind==='probe' && !a.closest(cfg.__articleSelector) && a.closest('ul,ol,[role="list"]'))return;
+    if(kind==='page' && a.tagName!=='LINK' && !inBody && !a.closest('#entryPageNav,.article-inner-pager,.pagination,.pager'))return;
+    if(a.ownerDocument===document && a.tagName==='A' && isLiveCssHidden(a))return;
+    if((kind==='probe'||kind==='gallery') && a.ownerDocument===document && !String(a.textContent||'').trim() && a.querySelector('img') && Array.from(a.querySelectorAll('img')).every(img=>isLiveCssHidden(img)))return;
+    const list=kind==='page'?nexts:body;
+    const before=list.length;
+    pushCandidate(list,href);
+    if(list.length===before)return;
+    const key=normalizeCrawlUrl(list[list.length-1]);
+    if(routes.size>=state.cfg.crawlMaxQueue+state.cfg.crawlBoostLimit && !routes.has(key)){list.pop();return;}
+    const old=routes.get(key);
+    const route=kind==='page'?(parentKind==='page'?'page':'gallery'):kind;
+    if(!old || route==='page' || (old==='probe' && route==='gallery'))routes.set(key,route);
+    if(inBody)bodyKeys.add(key);
   });
+  if(details)details.priorityLinks=nexts.slice();
   const merged = nexts.concat(body, out);
   const uniq = [];
   const seen = new Set();
@@ -3156,6 +3312,7 @@ function collectCrawlLinks(doc, baseUrl, details) {
   if (location.hostname.indexOf('weekly.ascii.jp') !== -1) {
     const rescue = new URL('img.html', location.href).toString();
     if (list.indexOf(rescue) === -1) list.unshift(rescue);
+    state.crawl.contentRoutes.set(normalizeCrawlUrl(rescue),'gallery');
   }
   if (details) details.links = list.slice();
   return list;
@@ -3191,6 +3348,7 @@ function buildPagerPlan(baseUrl, doc) {
   let param = '';
   const links = Array.from(doc.querySelectorAll('a[href]'));
   links.forEach(function(a) {
+    if (inSecondaryContent(a)) return;
     const href = a.getAttribute('href');
     if (!href) return;
     let u;
@@ -3208,6 +3366,7 @@ function buildPagerPlan(baseUrl, doc) {
   const numericMax = max;
   const pagerNodes = doc.querySelectorAll('.page-current, .article-inner-pager, .pager, .pagination, [class*="pager"], [class*="paging"], [id*="pager"]');
   for (const el of pagerNodes) {
+    if (inSecondaryContent(el)) continue;
     if (numericMax >= 2 && !el.matches('.page-current, .article-inner-pager')) {
       const linkedHere = Array.from(el.querySelectorAll('a[href]')).some(function(a) {
         try {
@@ -3495,6 +3654,35 @@ async function getDetachedResponsiveHidden(doc,page,signal) {
   return count?hidden:null;
 }
 
+function qualifyImageViewer(doc,page,kind) {
+  const root=doc.querySelector('main,article,[role="main"],#main,#content,.content')||doc.body;
+  if(!root)return null;
+  const base=getMediaDocumentBase(doc,page);
+  const hiddenCache=new WeakMap();
+  const imgs=Array.from(root.querySelectorAll('img')).filter(e=>!inAvoidScope(e)&&!isOriginallyHidden(e,hiddenCache)&&!isNavigationThumbnail(e,page,base)&&collectImageUrls(e,base).length);
+  // Some image index pages deliberately expose only text links to originals.
+  const fileLinks=imgs.length?[]:Array.from(root.querySelectorAll('a[href]')).filter(a=>{
+    if(inAvoidScope(a)||isOriginallyHidden(a,hiddenCache))return false;
+    return isDirectImageUrl(resolveMediaReference(a.getAttribute('href'),base));
+  });
+  const imageCount=imgs.length||fileLinks.length;
+  if(!imageCount)return null;
+  // A destination with ordinary article prose is not a viewer. Count
+  // meaningful text only, excluding navigation, captions and scripts.
+  let chars=0,paragraphs=0;
+  const walker=doc.createTreeWalker(root,4);
+  for(let n=walker.nextNode();n;n=walker.nextNode()){
+    const e=n.parentElement;
+    if(!e || e.closest('script,style,noscript,figcaption') || inAvoidScope(e))continue;
+    chars+=n.textContent.trim().length;
+    if(chars>900)return null;
+  }
+  for(const p of root.querySelectorAll('p'))if(!inAvoidScope(p)&&p.textContent.trim().length>100)paragraphs++;
+  const gallery=kind==='gallery' || !!root.querySelector('[class~="gallery"],[class~="photo-gallery"],[class~="image-viewer"],[id="gallery"],[id="viewer"]') || root.matches('.gallery,.photo-gallery,.image-viewer,#gallery,#viewer');
+  if(paragraphs>2 || (!gallery && (imageCount!==1 || chars>180)) || (gallery && paragraphs>0 && chars>imageCount*180+180))return null;
+  return root;
+}
+
 async function crawlFetch(url) {
   if (state.abort.aborted || state.crawl.stop) return;
   if (state.cfg.crawlPreferSameOriginOnly && !isSameOriginUrl(url)) return;
@@ -3519,7 +3707,7 @@ async function crawlFetch(url) {
       state.log.push('crawl', 'skip redirected out of scope ' + url);
       return;
     }
-    if (state.crawl.mode === 'pager' && state.crawl.pagerBase) {
+    if (state.crawl.mode === 'pager' && state.crawl.pagerBase && (state.crawl.contentRoutes.get(normalizeCrawlUrl(url))||'page')==='page') {
       const response = new URL(responseUrl);
       if (response.origin + response.pathname !== state.crawl.pagerBase) {
         state.log.push('crawl', 'skip redirect outside article ' + url);
@@ -3534,6 +3722,12 @@ async function crawlFetch(url) {
     const contentType = (res.headers && typeof res.headers.get === 'function')
       ? (res.headers.get('content-type') || '')
       : '';
+    const route=state.crawl.contentRoutes.get(normalizeCrawlUrl(url))||'page';
+    if (route!=='page' && /^image\/(?:jpeg|png|gif|webp|avif|bmp)(?:;|$)/i.test(contentType)) {
+      try{await res.body?.cancel();}catch(e){}
+      if(!crawlStopped())addItems([makeItem('img',responseUrl,{scope:'body',source:'crawl',directImageLink:true},url)]);
+      return;
+    }
     if (!isHtmlLikeContentType(contentType)) {
       state.log.push('crawl', 'skip non-html ' + url + ' ct=' + (contentType || 'none'));
       return;
@@ -3549,22 +3743,27 @@ async function crawlFetch(url) {
     const html = await readResponseTextLimited(res, state.cfg.maxHtmlChars, maxBytes);
     if (crawlStopped()) return;
     const doc = new DOMParser().parseFromString(html, 'text/html');
+    const viewerRoot=route==='page'?null:qualifyImageViewer(doc,responseUrl,route);
+    if(route!=='page' && !viewerRoot){state.log.push('crawl','skip non-viewer '+url);return;}
+    if(route!=='page' && state.crawl.contentRoutes.get(normalizeCrawlUrl(responseUrl))!=='page')state.crawl.contentRoutes.set(normalizeCrawlUrl(responseUrl),'gallery');
     const responsiveHidden = await getDetachedResponsiveHidden(doc,responseUrl,controller.signal);
     if (crawlStopped()) return;
-    const items = extractFromDocument(doc, 'crawl', responseUrl, responsiveHidden);
+    const items = extractFromDocument(doc, 'crawl', responseUrl, responsiveHidden, viewerRoot);
     if (crawlStopped()) return;
     if (!items.length) {
       state.log.push('crawl', '0 items (strict body-only) ' + url);
     }
     addItems(items);
     if (crawlStopped()) return;
-    if (state.crawl.mode === 'pager') {
+    if (state.crawl.mode === 'pager' && route==='page') {
       const plan = buildPagerPlan(responseUrl, doc);
       if (plan && plan.baseKey === state.crawl.pagerBase && plan.urls && plan.urls.length) {
         enqueueCrawlLinks(plan.urls, true, responseUrl);
         state.crawl.limit = Math.max(state.crawl.limit,
           Math.min(state.cfg.crawlArticleMaxPages || 30, state.crawl.visited.size + crawlQueueLength() + 2));
       }
+      const extra=collectCrawlLinksFromDocument(doc,responseUrl,{}).filter(u=>state.crawl.contentRoutes.get(normalizeCrawlUrl(u))!=='page');
+      enqueueCrawlLinks(extra.slice(0,state.cfg.crawlMaxNewLinksPerDoc),false,responseUrl);
     } else {
       const details = {};
       const more = collectCrawlLinksFromDocument(doc, responseUrl, details).slice(0, state.cfg.crawlMaxNewLinksPerDoc);
@@ -3612,6 +3811,7 @@ async function startCrawl() {
   state.crawl.queueDedup.clear();
   state.crawl.queuePriority.clear();
   state.crawl.pageOrder.clear();
+  if (!state.cfg.crawlBootstrapReuse) state.crawl.contentRoutes.clear();
   state.crawl.mode = '';
   state.crawl.pagerBase = '';
   state.crawl.pagerParam = '';
@@ -3625,6 +3825,8 @@ async function startCrawl() {
     state.crawl.pagerBase = plan.baseKey;
     state.crawl.pagerParam = plan.param;
     enqueueCrawlLinks(plan.urls, true);
+    const links=collectCrawlLinks(document,location.href,{});
+    enqueueCrawlLinks(links.filter(u=>state.crawl.contentRoutes.get(normalizeCrawlUrl(u))!=='page'));
   } else {
     const details = {};
     const links = bootstrap ? bootstrap.links : collectCrawlLinks(document, location.href, details);
